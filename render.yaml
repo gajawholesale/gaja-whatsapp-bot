@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: gaja-whatsapp-bot
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: python app.py
+    autoDeploy: true
+    envVars:
+      - key: ACCESS_TOKEN
+        sync: false
+      - key: PHONE_NUMBER_ID
+        sync: false
+      - key: VERIFY_TOKEN
+        value: gaja-verify-123
+      - key: APPS_SCRIPT_URL
+        sync: false
+      - key: APPS_SECRET
+        sync: false
+      - key: SCHEME_IMAGE_URL
+        sync: false
