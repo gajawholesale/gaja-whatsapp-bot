@@ -2,17 +2,20 @@ import os, requests
 from flask import Flask, request
 
 # ========= ENV =========
-ACCESS_TOKEN   = os.getenv("ACCESS_TOKEN")
-PHONE_ID       = os.getenv("PHONE_NUMBER_ID")
-VERIFY_TOKEN   = os.getenv("VERIFY_TOKEN", "gaja-verify-123")
-APPS_URL       = os.getenv("APPS_SCRIPT_URL")                # must end with /exec (no query)
-APPS_SECRET    = os.getenv("APPS_SECRET", "")
-GAJA_PHONE     = os.getenv("GAJA_PHONE", "+91-XXXXXXXXXX")
+ACCESS_TOKEN    = os.getenv("ACCESS_TOKEN")
+PHONE_ID        = os.getenv("PHONE_NUMBER_ID")
+VERIFY_TOKEN    = os.getenv("VERIFY_TOKEN", "gaja-verify-123")
 
-# Catalogue + Scheme assets
-CATALOG_URL    = os.getenv("CATALOG_URL", "")
+APPS_URL        = os.getenv("APPS_SCRIPT_URL")       # must end with /exec (no query)
+APPS_SECRET     = os.getenv("APPS_SECRET", "")
+
+GAJA_PHONE      = os.getenv("GAJA_PHONE", "+91-XXXXXXXXXX")
+
+CATALOG_URL     = os.getenv("CATALOG_URL", "")
+CATALOG_FILENAME= os.getenv("CATALOG_FILENAME", "GAJA-Catalogue.pdf")
+
 SCHEME_IMG_KEYS = ["SCHEME_IMG1","SCHEME_IMG2","SCHEME_IMG3","SCHEME_IMG4","SCHEME_IMG5"]
-SCHEME_IMAGES  = [os.getenv(k, "") for k in SCHEME_IMG_KEYS if os.getenv(k, "")]
+SCHEME_IMAGES   = [os.getenv(k, "") for k in SCHEME_IMG_KEYS if os.getenv(k, "")]
 
 GRAPH   = "https://graph.facebook.com/v20.0"
 HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type":"application/json"}
@@ -36,8 +39,10 @@ def send_image(to, url, caption=None):
     except Exception:
         pass
 
-def send_document(to, link, caption=None):
-    payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":{"link":link}}
+def send_document(to, link, caption=None, filename=None):
+    doc = {"link": link}
+    if filename: doc["filename"] = filename  # ensure .pdf filename, avoids .bin
+    payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":doc}
     if caption: payload["document"]["caption"] = caption
     try:
         requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
@@ -48,12 +53,24 @@ def sget(phone):
     if phone not in SESS: SESS[phone] = {"lang":"en", "state":"lang"}
     return SESS[phone]
 
-# ========= Copy helpers =========
+# ========= Copy helpers & strings =========
 INSTRUCT_EN = "👉 Reply with the number of your choice."
 INSTRUCT_TA = "👉 விருப்ப எண்ணை மட்டும் பதிலளிக்கவும்."
 
+INVALID_EN  = "Invalid entry, try again."
+INVALID_TA  = "தவறான உள்ளீடு, மீண்டும் முயற்சிக்கவும்."
+
+def invalid(to, lang):
+    send_text(to, INVALID_EN if lang=="en" else INVALID_TA)
+
+def back_block(lang):
+    # always show a blank line, then back + change language
+    return ("\n0. Back\n00. Change language"
+            if lang=="en" else
+            "\n0. திரும்பிச் செல்ல\n00. மொழியை மாற்ற")
+
 def ask_language(to):
-    send_text(to,
+    send_text(
         "Please select your language / தயவுசெய்து மொழியைத் தேர்ந்தெடுக்கவும்:\n"
         "1. English\n"
         "2. தமிழ்\n\n"
@@ -66,37 +83,35 @@ def main_menu(to, lang):
                "1. Customer\n"
                "2. Retailer\n"
                "3. Carpenter\n"
-               "9. Talk to Gaja\n\n"
-               f"{INSTRUCT_EN}")
+               "9. Talk to Gaja"
+               f"{back_block('en')}\n\n{INSTRUCT_EN}")
     else:
         msg = ("நீங்கள் யார்?\n"
                "1. வாடிக்கையாளர்\n"
                "2. விற்பனையாளர்\n"
                "3. கார்பென்டர்\n"
-               "9. கஜா அணியுடன் பேச\n\n"
-               f"{INSTRUCT_TA}")
+               "9. கஜா அணியுடன் பேச"
+               f"{back_block('ta')}\n\n{INSTRUCT_TA}")
     send_text(to, msg)
 
 def customer_menu(to, lang):
     if lang == "en":
         msg = ("Customer options:\n"
-               "1. View Catalogue\n"
-               "0. Back\n\n"
-               f"{INSTRUCT_EN}")
+               "1. View Catalogue"
+               f"{back_block('en')}\n\n{INSTRUCT_EN}")
     else:
         msg = ("வாடிக்கையாளருக்கான விருப்பங்கள்\n"
-               "1. விவரப்பட்டியை பார்க்க (Catalogue)\n"
-               "0. திரும்பிச் செல்ல\n\n"
-               f"{INSTRUCT_TA}")
+               "1. விவரப்பட்டியை பார்க்க (Catalogue)"
+               f"{back_block('ta')}\n\n{INSTRUCT_TA}")
     send_text(to, msg)
 
 def retailer_menu(to, lang):
     if lang == "en":
-        msg = ("Retailer options (coming soon).\n"
-               "0. Back")
+        msg = ("Retailer options (coming soon)."
+               f"{back_block('en')}")
     else:
-        msg = ("விற்பனையாளருக்கான விருப்பங்கள் (விரைவில் வரும்).\n"
-               "0. திரும்பிச் செல்ல")
+        msg = ("விற்பனையாளருக்கான விருப்பங்கள் (விரைவில் வரும்)."
+               f"{back_block('ta')}")
     send_text(to, msg)
 
 def carpenter_menu(to, lang):
@@ -104,16 +119,14 @@ def carpenter_menu(to, lang):
         msg = ("Carpenter options:\n"
                "1. Register for Carpenter Code\n"
                "2. Scheme values\n"
-               "3. Cashback details\n"
-               "0. Back\n\n"
-               f"{INSTRUCT_EN}")
+               "3. Cashback details"
+               f"{back_block('en')}\n\n{INSTRUCT_EN}")
     else:
         msg = ("கார்பென்டருக்கான விருப்பங்கள்:\n"
                "1. கார்பென்டர் குறியீட்டைப் பதிவு செய்ய\n"
                "2. கஜா பொருட்களுக்கான ஊக்கத்தொகை மதிப்புகள்\n"
-               "3. கேஷ்பேக் விவரங்கள்\n"
-               "0. திரும்பிச் செல்ல\n\n"
-               f"{INSTRUCT_TA}")
+               "3. கேஷ்பேக் விவரங்கள்"
+               f"{back_block('ta')}\n\n{INSTRUCT_TA}")
     send_text(to, msg)
 
 def ask_code(to, lang):
@@ -171,9 +184,19 @@ def incoming():
     except Exception:
         return "ok", 200
 
-    frm = msg["from"]
-    s   = sget(frm)
+    frm  = msg["from"]
+    s    = sget(frm)
     text = msg["text"]["body"].strip() if msg.get("type") == "text" else ""
+
+    # Global shortcuts
+    if text == "00":  # change language from anywhere
+        s["state"] = "lang"; ask_language(frm); return "ok", 200
+    if text == "0":   # back from anywhere
+        # From main, back goes to language
+        if s["state"] in ("main", "lang"):
+            s["state"] = "lang"; ask_language(frm); return "ok", 200
+        # Otherwise go one level up
+        s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
 
     # Language selection
     if s["state"] == "lang":
@@ -181,7 +204,7 @@ def incoming():
             s["lang"] = "en"; s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
         if text == "2":
             s["lang"] = "ta"; s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
-        ask_language(frm); return "ok", 200
+        invalid(frm, "en"); ask_language(frm); return "ok", 200
 
     # Main menu
     if s["state"] == "main":
@@ -194,30 +217,25 @@ def incoming():
         if text == "9":
             send_text(frm, f"✅ A human will reply here soon.\nFor urgent help: {GAJA_PHONE}")
             return "ok", 200
-        main_menu(frm, s["lang"]); return "ok", 200
+        invalid(frm, s["lang"]); main_menu(frm, s["lang"]); return "ok", 200
 
     # Customer flow
     if s["state"] == "cust":
         if text == "1":
             if CATALOG_URL:
-                send_document(frm, CATALOG_URL, "📖 GAJA Catalogue")
+                send_document(frm, CATALOG_URL, "📖 GAJA Catalogue", CATALOG_FILENAME)
             else:
                 send_text(frm, "Catalogue not available right now." if s["lang"]=="en" else "கையேடு தற்போது கிடைக்கவில்லை.")
             return "ok", 200
-        if text == "0":
-            s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
-        customer_menu(frm, s["lang"]); return "ok", 200
+        invalid(frm, s["lang"]); customer_menu(frm, s["lang"]); return "ok", 200
 
     # Retailer flow (stub)
     if s["state"] == "ret":
-        if text == "0":
-            s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
-        retailer_menu(frm, s["lang"]); return "ok", 200
+        invalid(frm, s["lang"]); retailer_menu(frm, s["lang"]); return "ok", 200
 
     # Carpenter flow
     if s["state"] == "carp":
         if text == "1":
-            # Register for carpenter code (ask phone)
             if s["lang"] == "en":
                 send_text(frm, "Please send your phone number.\nOur team will call you and collect the required details to complete the registration.")
             else:
@@ -225,7 +243,6 @@ def incoming():
             return "ok", 200
 
         if text == "2":
-            # Send 1..5 scheme images (if provided)
             sent = False
             for i, url in enumerate(SCHEME_IMAGES, start=1):
                 if url:
@@ -239,10 +256,7 @@ def incoming():
         if text == "3":
             s["state"] = "cb_code"; ask_code(frm, s["lang"]); return "ok", 200
 
-        if text == "0":
-            s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
-
-        carpenter_menu(frm, s["lang"]); return "ok", 200
+        invalid(frm, s["lang"]); carpenter_menu(frm, s["lang"]); return "ok", 200
 
     # Cashback: code → months → result
     if s["state"] == "cb_code":
@@ -253,20 +267,33 @@ def incoming():
             s["state"] = "carp"; return "ok", 200
         s["months"] = months
         if s["lang"] == "en":
-            menu = "Select a month:\n" + "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) + "\n0. Back\n\n" + INSTRUCT_EN
+            menu = ("Select a month:\n" +
+                    "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) +
+                    f"{back_block('en')}\n\n{INSTRUCT_EN}")
         else:
-            menu = "மாதத்தைத் தேர்ந்தெடுக்கவும்:\n" + "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) + "\n0. திரும்பிச் செல்ல\n\n" + INSTRUCT_TA
+            menu = ("மாதத்தைத் தேர்ந்தெடுக்கவும்:\n" +
+                    "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) +
+                    f"{back_block('ta')}\n\n{INSTRUCT_TA}")
         send_text(frm, menu)
         s["state"] = "cb_month"; return "ok", 200
 
     if s["state"] == "cb_month":
-        if text == "0":
-            s["state"] = "carp"; carpenter_menu(frm, s["lang"]); return "ok", 200
         try:
             idx = int(text) - 1
+            if idx < 0: raise ValueError()
             month = s["months"][idx]
         except Exception:
-            send_text(frm, "Invalid choice. Try again." if s["lang"]=="en" else "தவறான தேர்வு. மீண்டும் முயற்சிக்கவும்.")
+            invalid(frm, s["lang"])
+            # re-show same month list
+            if s["lang"] == "en":
+                menu = ("Select a month:\n" +
+                        "\n".join([f"{i+1}. {m}" for i, m in enumerate(s["months"])]) +
+                        f"{back_block('en')}\n\n{INSTRUCT_EN}")
+            else:
+                menu = ("மாதத்தைத் தேர்ந்தெடுக்கவும்:\n" +
+                        "\n".join([f"{i+1}. {m}" for i, m in enumerate(s["months"])]) +
+                        f"{back_block('ta')}\n\n{INSTRUCT_TA}")
+            send_text(frm, menu)
             return "ok", 200
 
         j = fetch_cashback(s["code"], month)
