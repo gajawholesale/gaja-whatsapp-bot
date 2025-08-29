@@ -21,7 +21,7 @@ GRAPH   = "https://graph.facebook.com/v20.0"
 HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type":"application/json"}
 
 # ========= SESSION STORE =========
-SESS = {}  
+SESS = {}
 SESSION_TTL = 300  # 5 minutes
 
 def sget(phone):
@@ -33,17 +33,39 @@ def sget(phone):
     s["last"] = now
     return s
 
+# ========= DEDUP STORE =========
+PROCESSED = {}        # message_id -> timestamp
+PROCESSED_TTL = 600   # keep ids for 10 minutes
+
+def already_processed(mid: str) -> bool:
+    if not mid:
+        return False
+    now = time.time()
+    # purge old ids
+    to_del = [k for k, t in PROCESSED.items() if now - t > PROCESSED_TTL]
+    for k in to_del:
+        PROCESSED.pop(k, None)
+    if mid in PROCESSED:
+        return True
+    PROCESSED[mid] = now
+    return False
+
 # ========= SEND HELPERS =========
 def send_text(to, body):
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS,
-                      json={"messaging_product":"whatsapp","to":to,"text":{"body":body}}, timeout=15)
+        requests.post(
+            f"{GRAPH}/{PHONE_ID}/messages",
+            headers=HEADERS,
+            json={"messaging_product":"whatsapp","to":to,"text":{"body":body}},
+            timeout=15
+        )
     except Exception:
         pass
 
 def send_image(to, url, caption=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"image","image":{"link":url}}
-    if caption: payload["image"]["caption"] = caption
+    if caption:
+        payload["image"]["caption"] = caption
     try:
         requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
     except Exception:
@@ -51,9 +73,11 @@ def send_image(to, url, caption=None):
 
 def send_document(to, link, caption=None, filename=None):
     doc = {"link": link}
-    if filename: doc["filename"] = filename
+    if filename:
+        doc["filename"] = filename
     payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":doc}
-    if caption: payload["document"]["caption"] = caption
+    if caption:
+        payload["document"]["caption"] = caption
     try:
         requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
     except Exception:
@@ -149,9 +173,11 @@ def server_down_msg(lang):
 def fetch_months(n=3):
     try:
         params = {"action":"months","latest":str(n)}
-        if APPS_SECRET: params["secret"] = APPS_SECRET
+        if APPS_SECRET:
+            params["secret"] = APPS_SECRET
         r = requests.get(APPS_URL, params=params, timeout=10)
-        if not r.ok: return None
+        if not r.ok:
+            return None
         return r.json().get("months", [])
     except Exception:
         return None
@@ -159,9 +185,11 @@ def fetch_months(n=3):
 def fetch_cashback(code, month):
     try:
         params = {"action":"cashback","code":code,"month":month}
-        if APPS_SECRET: params["secret"] = APPS_SECRET
+        if APPS_SECRET:
+            params["secret"] = APPS_SECRET
         r = requests.get(APPS_URL, params=params, timeout=10)
-        if not r.ok: return None
+        if not r.ok:
+            return None
         return r.json()
     except Exception:
         return None
@@ -187,9 +215,20 @@ def incoming():
     except Exception:
         return "ok", 200
 
+    # --- drop duplicates (idempotency) ---
+    mid = msg.get("id")
+    if already_processed(mid):
+        return "ok", 200
+
+    # --- only handle plain text messages with a body ---
+    if msg.get("type") != "text":
+        return "ok", 200
+
     frm  = msg["from"]
     s    = sget(frm)
-    text = msg["text"]["body"].strip() if msg.get("type") == "text" else ""
+    text = (msg.get("text", {}).get("body") or "").strip()
+    if not text:
+        return "ok", 200
 
     # Hidden session end
     if text.upper() == "EXIT":
@@ -284,7 +323,8 @@ def incoming():
     if s["state"] == "cb_month":
         try:
             idx = int(text) - 1
-            if idx < 0: raise ValueError()
+            if idx < 0:
+                raise ValueError()
             month = s["months"][idx]
         except Exception:
             invalid(frm, s["lang"])
