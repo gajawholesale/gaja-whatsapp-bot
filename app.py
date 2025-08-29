@@ -75,7 +75,7 @@ def back_block(lang):
             "\n0. திரும்பிச் செல்ல\n9. முதன்மை பட்டி")
 
 def ask_language(to):
-    send_text(
+    send_text(to,
         "Please select your language / தயவுசெய்து மொழியைத் தேர்ந்தெடுக்கவும்:\n"
         "1. English\n"
         "2. தமிழ்\n\n"
