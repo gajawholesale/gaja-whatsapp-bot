@@ -74,14 +74,14 @@ def main_menu(to, lang):
         msg = ("Please choose:\n"
                "1. Customer\n"
                "2. Retailer\n"
-               "3. Carpenter\n"
+               "3. Carpenter\n\n\n"
                "8. Talk to Gaja"    # moved from 9 → 8
                f"{footer('en')}\n\n{INSTRUCT_EN}")
     else:
         msg = ("நீங்கள் யார்?\n"
                "1. வாடிக்கையாளர்\n"
                "2. விற்பனையாளர்\n"
-               "3. கார்பென்டர்\n"
+               "3. கார்பென்டர்\n\n\n"
                "8. கஜா அணியுடன் பேச"
                f"{footer('ta')}\n\n{INSTRUCT_TA}")
     send_text(to, msg)
