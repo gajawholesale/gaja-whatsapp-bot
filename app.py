@@ -1,4 +1,4 @@
-import os, requests, time
+import os, requests, time, threading, traceback
 from flask import Flask, request
 
 # ========= ENV =========
@@ -11,7 +11,7 @@ APPS_SECRET     = os.getenv("APPS_SECRET", "")
 
 GAJA_PHONE      = os.getenv("GAJA_PHONE", "+91-XXXXXXXXXX")
 
-CATALOG_URL     = os.getenv("CATALOG_URL", "")       # Prefer a link ending with .pdf
+CATALOG_URL     = os.getenv("CATALOG_URL", "")
 CATALOG_FILENAME= os.getenv("CATALOG_FILENAME", "GAJA-Catalogue.pdf")
 
 SCHEME_IMG_KEYS = ["SCHEME_IMG1","SCHEME_IMG2","SCHEME_IMG3","SCHEME_IMG4","SCHEME_IMG5"]
@@ -22,54 +22,70 @@ HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type":"applicatio
 
 # ========= SESSION STORE =========
 SESS = {}
-SESSION_TTL = 300  # 5 minutes
+LOCK = threading.Lock()
 
 def sget(phone):
     now = time.time()
-    s = SESS.get(phone)
-    if not s or (now - s.get("last", 0) > SESSION_TTL):
-        s = {"lang":"en", "state":"lang"}
-        SESS[phone] = s
-    s["last"] = now
+    with LOCK:
+        s = SESS.get(phone)
+        # TTL depends on state
+        if s:
+            if s.get("state") in ("lang", "main"):
+                ttl = 120   # 2 min for menus
+            else:
+                ttl = 300   # 5 min for deeper flows
+        else:
+            ttl = 120
+
+        if not s or (now - s.get("last", 0) > ttl):
+            s = {"lang":"en", "state":"lang"}
+            SESS[phone] = s
+        s["last"] = now
     return s
 
 # ========= DEDUP STORE =========
-PROCESSED = {}        # message_id -> timestamp
-PROCESSED_TTL = 600   # keep ids for 10 minutes
+PROCESSED = {}
+PROCESSED_TTL = 600
 
 def already_processed(mid: str) -> bool:
     if not mid:
         return False
     now = time.time()
-    # purge old ids
-    to_del = [k for k, t in PROCESSED.items() if now - t > PROCESSED_TTL]
-    for k in to_del:
-        PROCESSED.pop(k, None)
-    if mid in PROCESSED:
-        return True
-    PROCESSED[mid] = now
+    with LOCK:
+        to_del = [k for k, t in PROCESSED.items() if now - t > PROCESSED_TTL]
+        for k in to_del:
+            PROCESSED.pop(k, None)
+        if mid in PROCESSED:
+            return True
+        PROCESSED[mid] = now
     return False
 
 # ========= SEND HELPERS =========
 def send_text(to, body):
     try:
-        requests.post(
+        r = requests.post(
             f"{GRAPH}/{PHONE_ID}/messages",
             headers=HEADERS,
             json={"messaging_product":"whatsapp","to":to,"text":{"body":body}},
             timeout=15
         )
-    except Exception:
-        pass
+        if not r.ok:
+            print("WA send_text error:", r.status_code, r.text)
+    except Exception as e:
+        print("send_text exception:", e)
+        traceback.print_exc()
 
 def send_image(to, url, caption=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"image","image":{"link":url}}
     if caption:
         payload["image"]["caption"] = caption
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-    except Exception:
-        pass
+        r = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        if not r.ok:
+            print("WA send_image error:", r.status_code, r.text)
+    except Exception as e:
+        print("send_image exception:", e)
+        traceback.print_exc()
 
 def send_document(to, link, caption=None, filename=None):
     doc = {"link": link}
@@ -79,9 +95,12 @@ def send_document(to, link, caption=None, filename=None):
     if caption:
         payload["document"]["caption"] = caption
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-    except Exception:
-        pass
+        r = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        if not r.ok:
+            print("WA send_document error:", r.status_code, r.text)
+    except Exception as e:
+        print("send_document exception:", e)
+        traceback.print_exc()
 
 # ========= COPY HELPERS =========
 INSTRUCT_EN = "👉 Reply with the number of your choice."
@@ -92,11 +111,6 @@ INVALID_TA  = "தவறான உள்ளீடு, மீண்டும் �
 
 def invalid(to, lang):
     send_text(to, INVALID_EN if lang=="en" else INVALID_TA)
-
-def back_block(lang):
-    return ("\n0. Back\n9. Main Menu"
-            if lang=="en" else
-            "\n0. திரும்பிச் செல்ல\n9. முதன்மை பட்டி")
 
 def ask_language(to):
     send_text(to,
@@ -112,35 +126,33 @@ def main_menu(to, lang):
                "1. Customer\n"
                "2. Retailer\n"
                "3. Carpenter\n\n"
-               "4. Talk to Gaja"
-               f"{back_block('en')}\n\n{INSTRUCT_EN}")
+               "4. Talk to Gaja\n\n"
+               f"{INSTRUCT_EN}")
     else:
         msg = ("நீங்கள் யார்?\n"
                "1. வாடிக்கையாளர்\n"
                "2. விற்பனையாளர்\n"
                "3. கார்பென்டர்\n\n"
-               "4. கஜா அணியுடன் பேச"
-               f"{back_block('ta')}\n\n{INSTRUCT_TA}")
+               "4. கஜா அணியுடன் பேச\n\n"
+               f"{INSTRUCT_TA}")
     send_text(to, msg)
 
 def customer_menu(to, lang):
     if lang == "en":
         msg = ("Customer options:\n"
-               "1. View Catalogue"
-               f"{back_block('en')}\n\n{INSTRUCT_EN}")
+               "1. View Catalogue\n\n"
+               f"{INSTRUCT_EN}")
     else:
         msg = ("வாடிக்கையாளருக்கான விருப்பங்கள்\n"
-               "1. விவரப்பட்டியை பார்க்க (Catalogue)"
-               f"{back_block('ta')}\n\n{INSTRUCT_TA}")
+               "1. விவரப்பட்டியை பார்க்க (Catalogue)\n\n"
+               f"{INSTRUCT_TA}")
     send_text(to, msg)
 
 def retailer_menu(to, lang):
     if lang == "en":
-        msg = ("Retailer options (coming soon)."
-               f"{back_block('en')}")
+        msg = "Retailer options (coming soon). Returning to main menu..."
     else:
-        msg = ("விற்பனையாளருக்கான விருப்பங்கள் (விரைவில் வரும்)."
-               f"{back_block('ta')}")
+        msg = "விற்பனையாளருக்கான விருப்பங்கள் (விரைவில் வரும்). முதன்மை பட்டிக்குத் திரும்புகிறது..."
     send_text(to, msg)
 
 def carpenter_menu(to, lang):
@@ -148,14 +160,14 @@ def carpenter_menu(to, lang):
         msg = ("Carpenter options:\n"
                "1. Register for Carpenter Code\n"
                "2. Scheme values\n"
-               "3. Cashback details"
-               f"{back_block('en')}\n\n{INSTRUCT_EN}")
+               "3. Cashback details\n\n"
+               f"{INSTRUCT_EN}")
     else:
         msg = ("கார்பென்டருக்கான விருப்பங்கள்:\n"
                "1. கார்பென்டர் குறியீட்டைப் பதிவு செய்ய\n"
                "2. கஜா பொருட்களுக்கான ஊக்கத்தொகை மதிப்புகள்\n"
-               "3. கேஷ்பேக் விவரங்கள்"
-               f"{back_block('ta')}\n\n{INSTRUCT_TA}")
+               "3. கேஷ்பேக் விவரங்கள்\n\n"
+               f"{INSTRUCT_TA}")
     send_text(to, msg)
 
 def ask_code(to, lang):
@@ -179,7 +191,9 @@ def fetch_months(n=3):
         if not r.ok:
             return None
         return r.json().get("months", [])
-    except Exception:
+    except Exception as e:
+        print("fetch_months error:", e)
+        traceback.print_exc()
         return None
 
 def fetch_cashback(code, month):
@@ -191,7 +205,9 @@ def fetch_cashback(code, month):
         if not r.ok:
             return None
         return r.json()
-    except Exception:
+    except Exception as e:
+        print("fetch_cashback error:", e)
+        traceback.print_exc()
         return None
 
 # ========= Flask app =========
@@ -215,12 +231,12 @@ def incoming():
     except Exception:
         return "ok", 200
 
-    # --- drop duplicates (idempotency) ---
+    # --- dedup ---
     mid = msg.get("id")
     if already_processed(mid):
         return "ok", 200
 
-    # --- only handle plain text messages with a body ---
+    # --- only text ---
     if msg.get("type") != "text":
         return "ok", 200
 
@@ -230,19 +246,16 @@ def incoming():
     if not text:
         return "ok", 200
 
-    # Hidden session end
-    if text.upper() == "EXIT":
-        SESS.pop(frm, None)
+    # EXIT/STOP
+    if text.upper() in ("EXIT", "STOP"):
+        with LOCK:
+            SESS.pop(frm, None)
         send_text(frm, "✅ Session ended. Send any message to start again.")
         return "ok", 200
 
-    # Global shortcuts
-    if text == "9":   # Main Menu
-        s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
-    if text == "0":   # Back
-        if s["state"] in ("main", "lang"):
-            s["state"] = "lang"; ask_language(frm); return "ok", 200
-        s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
+    # Main Menu → language
+    if text == "9":
+        s["state"] = "lang"; ask_language(frm); return "ok", 200
 
     # Language selection
     if s["state"] == "lang":
@@ -250,14 +263,14 @@ def incoming():
             s["lang"] = "en"; s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
         if text == "2":
             s["lang"] = "ta"; s["state"] = "main"; main_menu(frm, s["lang"]); return "ok", 200
-        invalid(frm, "en"); ask_language(frm); return "ok", 200
+        invalid(frm, s["lang"]); ask_language(frm); return "ok", 200
 
     # Main menu
     if s["state"] == "main":
         if text == "1":
             s["state"] = "cust"; customer_menu(frm, s["lang"]); return "ok", 200
         if text == "2":
-            s["state"] = "ret"; retailer_menu(frm, s["lang"]); return "ok", 200
+            retailer_menu(frm, s["lang"]); s["state"] = "lang"; ask_language(frm); return "ok", 200
         if text == "3":
             s["state"] = "carp"; carpenter_menu(frm, s["lang"]); return "ok", 200
         if text == "4":
@@ -274,10 +287,6 @@ def incoming():
                 send_text(frm, "Catalogue not available right now." if s["lang"]=="en" else "கையேடு தற்போது கிடைக்கவில்லை.")
             return "ok", 200
         invalid(frm, s["lang"]); customer_menu(frm, s["lang"]); return "ok", 200
-
-    # Retailer flow
-    if s["state"] == "ret":
-        invalid(frm, s["lang"]); retailer_menu(frm, s["lang"]); return "ok", 200
 
     # Carpenter flow
     if s["state"] == "carp":
@@ -301,7 +310,7 @@ def incoming():
             s["state"] = "cb_code"; ask_code(frm, s["lang"]); return "ok", 200
         invalid(frm, s["lang"]); carpenter_menu(frm, s["lang"]); return "ok", 200
 
-    # Cashback: code → months → result
+    # Cashback flows
     if s["state"] == "cb_code":
         s["code"] = text.strip().upper()
         months = fetch_months(3)
@@ -312,18 +321,18 @@ def incoming():
         if s["lang"] == "en":
             menu = ("Select a month:\n" +
                     "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) +
-                    f"{back_block('en')}\n\n{INSTRUCT_EN}")
+                    f"\n\n{INSTRUCT_EN}")
         else:
             menu = ("மாதத்தைத் தேர்ந்தெடுக்கவும்:\n" +
                     "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) +
-                    f"{back_block('ta')}\n\n{INSTRUCT_TA}")
+                    f"\n\n{INSTRUCT_TA}")
         send_text(frm, menu)
         s["state"] = "cb_month"; return "ok", 200
 
     if s["state"] == "cb_month":
         try:
             idx = int(text) - 1
-            if idx < 0:
+            if idx < 0 or idx >= len(s["months"]):
                 raise ValueError()
             month = s["months"][idx]
         except Exception:
@@ -331,11 +340,11 @@ def incoming():
             if s["lang"] == "en":
                 menu = ("Select a month:\n" +
                         "\n".join([f"{i+1}. {m}" for i, m in enumerate(s["months"])]) +
-                        f"{back_block('en')}\n\n{INSTRUCT_EN}")
+                        f"\n\n{INSTRUCT_EN}")
             else:
                 menu = ("மாதத்தைத் தேர்ந்தெடுக்கவும்:\n" +
                         "\n".join([f"{i+1}. {m}" for i, m in enumerate(s["months"])]) +
-                        f"{back_block('ta')}\n\n{INSTRUCT_TA}")
+                        f"\n\n{INSTRUCT_TA}")
             send_text(frm, menu)
             return "ok", 200
 
@@ -362,7 +371,28 @@ def incoming():
         s["state"] = "carp"; return "ok", 200
 
     # Fallback
-    s["state"] = "lang"; ask_language(frm); return "ok", 200
+    invalid(frm, s["lang"])
+    if s["state"] == "cust": customer_menu(frm, s["lang"])
+    elif s["state"] == "carp": carpenter_menu(frm, s["lang"])
+    elif s["state"] == "cb_code": ask_code(frm, s["lang"])
+    elif s["state"] == "cb_month":
+        months = s.get("months", [])
+        if months:
+            if s["lang"] == "en":
+                menu = ("Select a month:\n" +
+                        "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) +
+                        f"\n\n{INSTRUCT_EN}")
+            else:
+                menu = ("மாதத்தைத் தேர்ந்தெடுக்கவும்:\n" +
+                        "\n".join([f"{i+1}. {m}" for i, m in enumerate(months)]) +
+                        f"\n\n{INSTRUCT_TA}")
+            send_text(frm, menu)
+        else:
+            ask_language(frm)
+    else:
+        ask_language(frm)
+
+    return "ok", 200
 
 
 if __name__ == "__main__":
