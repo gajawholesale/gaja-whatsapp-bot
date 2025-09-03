@@ -1,4 +1,4 @@
-import os, requests, time, json, traceback
+import os, requests, json
 from flask import Flask, request
 import redis
 from datetime import datetime
@@ -24,52 +24,24 @@ HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type":"applicatio
 REDIS_URL = os.getenv("REDIS_URL")
 r = redis.from_url(REDIS_URL, decode_responses=True)
 
-# ========= LOGGING =========
-def log_pumble(msg: str):
-    if not PUMBLE_WEBHOOK: return
-    try: requests.post(PUMBLE_WEBHOOK, json={"text": msg}, timeout=5)
-    except: pass
+# ========= HELPERS =========
+def save_session(frm, s):
+    ttl = 120 if s["state"] in ("lang","main") else 300
+    r.setex(f"sess:{frm}", ttl, json.dumps(s))
 
-# ========= SESSION STORE =========
 def sget(phone):
     key = f"sess:{phone}"
     s = r.get(key)
     if s: s = json.loads(s)
     else: s = {"lang": "en", "state": "lang"}
-    ttl = 120 if s["state"] in ("lang","main") else 300
-    r.setex(key, ttl, json.dumps(s))
+    save_session(phone, s)
     return s
 
-# ========= DEDUP =========
 def already_processed(mid: str) -> bool:
     if not mid: return False
     key = f"msg:{mid}"
     return not r.set(name=key, value="1", nx=True, ex=600)
 
-# ========= CARPENTER LIMIT =========
-def check_carpenter_limit(frm, text, state):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    dup_key = f"count:{today}:{frm}"
-    bypass_key = f"bypass:{today}:{frm}"
-
-    if text.upper() == "BYPASS":
-        r.set(bypass_key, "1", ex=86400)
-        send_text(frm, "✅ Bypass activated. Limits skipped for today.")
-        return False, 0
-
-    if not (state.startswith("carp") or state.startswith("cb")):
-        return False, 0
-    if r.get(bypass_key): return False, 0
-
-    dup_count = r.incr(dup_key); r.expire(dup_key, 86400)
-    if dup_count > 5:
-        send_text(frm, f"⚠️ You have reached today’s query limit.\n"
-                       f"Please contact GAJA for support: {GAJA_PHONE}.")
-        log_pumble(f"🚫 Blocked: {frm} exceeded cashback attempts today")
-        return True, dup_count
-    return False, dup_count
-
-# ========= SEND HELPERS =========
 def send_text(to, body):
     try:
         requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS,
@@ -88,6 +60,11 @@ def send_document(to, link, caption=None, filename=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":doc}
     if caption: payload["document"]["caption"] = caption
     try: requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+    except: pass
+
+def log_pumble(msg: str):
+    if not PUMBLE_WEBHOOK: return
+    try: requests.post(PUMBLE_WEBHOOK, json={"text": msg}, timeout=5)
     except: pass
 
 # ========= COPY HELPERS =========
@@ -131,7 +108,7 @@ def server_down_msg(lang):
             if lang=="en" else
             f"⛔ சர்வர் கிடைக்கவில்லை. பிறகு முயற்சிக்கவும் அல்லது {GAJA_PHONE} அழைக்கவும்")
 
-# ========= Apps Script calls =========
+# ========= Apps Script =========
 def fetch_months(n=3):
     try:
         params = {"action":"months","latest":str(n)}
@@ -150,7 +127,7 @@ def fetch_cashback(code, month):
         return r2.json()
     except: return None
 
-# ========= Flask app =========
+# ========= Flask =========
 app = Flask(__name__)
 
 @app.get("/")
@@ -177,29 +154,25 @@ def incoming():
     text = (msg.get("text", {}).get("body") or "").strip()
     if not text: return "ok", 200
 
-    # Carpenter cap
-    blocked, _ = check_carpenter_limit(frm, text, s.get("state",""))
-    if blocked: return "ok", 200
-
     # EXIT
     if text.upper() in ("EXIT","STOP"):
         r.delete(f"sess:{frm}"); send_text(frm,"✅ Session ended. Send any msg to start again.")
         return "ok", 200
 
     # Main menu shortcut
-    if text=="9": s["state"]="lang"; ask_language(frm); return "ok", 200
+    if text=="9": s["state"]="lang"; ask_language(frm); save_session(frm,s); return "ok", 200
 
     # Language
     if s["state"]=="lang":
-        if text=="1": s["lang"]="en"; s["state"]="main"; main_menu(frm,s["lang"]); return "ok",200
-        if text=="2": s["lang"]="ta"; s["state"]="main"; main_menu(frm,s["lang"]); return "ok",200
+        if text=="1": s["lang"]="en"; s["state"]="main"; main_menu(frm,s["lang"]); save_session(frm,s); return "ok",200
+        if text=="2": s["lang"]="ta"; s["state"]="main"; main_menu(frm,s["lang"]); save_session(frm,s); return "ok",200
         invalid(frm,s["lang"]); ask_language(frm); return "ok",200
 
     # Main menu
     if s["state"]=="main":
-        if text=="1": s["state"]="cust"; customer_menu(frm,s["lang"]); return "ok",200
-        if text=="2": send_text(frm,"Retailer options (coming soon)."); s["state"]="lang"; ask_language(frm); return "ok",200
-        if text=="3": s["state"]="carp"; carpenter_menu(frm,s["lang"]); return "ok",200
+        if text=="1": s["state"]="cust"; customer_menu(frm,s["lang"]); save_session(frm,s); return "ok",200
+        if text=="2": send_text(frm,"Retailer options (coming soon)."); s["state"]="lang"; ask_language(frm); save_session(frm,s); return "ok",200
+        if text=="3": s["state"]="carp"; carpenter_menu(frm,s["lang"]); save_session(frm,s); return "ok",200
         if text=="4": send_text(frm,f"✅ A human will reply.\n📞 Call {GAJA_PHONE}"); return "ok",200
         invalid(frm,s["lang"]); main_menu(frm,s["lang"]); return "ok",200
 
@@ -224,33 +197,35 @@ def incoming():
                 for i,u in enumerate(SCHEME_IMAGES,1): send_image(frm,u,f"🛠️ GAJA Scheme {i}/{len(SCHEME_IMAGES)}")
             else: send_text(frm,"Scheme graphics not set." if s["lang"]=="en" else "ஸ்கீம் படங்கள் இல்லை.")
             return "ok",200
-        if text=="3": s["state"]="cb_code"; ask_code(frm,s["lang"]); return "ok",200
+        if text=="3": s["state"]="cb_code"; ask_code(frm,s["lang"]); save_session(frm,s); return "ok",200
         invalid(frm,s["lang"]); carpenter_menu(frm,s["lang"]); return "ok",200
 
     # Cashback
     if s["state"]=="cb_code":
         s["code"]=text.strip().upper(); months=fetch_months(3)
-        if not months: send_text(frm,server_down_msg(s["lang"])); s["state"]="carp"; return "ok",200
+        if not months: send_text(frm,server_down_msg(s["lang"])); s["state"]="carp"; save_session(frm,s); return "ok",200
         s["months"]=months
         menu=("Select a month:\n" if s["lang"]=="en" else "மாதத்தைத் தேர்ந்தெடுக்கவும்:\n")+ \
              "\n".join([f"{i+1}. {m}" for i,m in enumerate(months)])
         send_text(frm,menu+("\n\n"+INSTRUCT_EN if s["lang"]=="en" else "\n\n"+INSTRUCT_TA))
-        s["state"]="cb_month"; return "ok",200
+        s["state"]="cb_month"; save_session(frm,s); return "ok",200
 
     if s["state"]=="cb_month":
         try: idx=int(text)-1; month=s["months"][idx]
         except: invalid(frm,s["lang"]); return "ok",200
         j=fetch_cashback(s["code"],month)
-        if j is None: send_text(frm,server_down_msg(s["lang"])); s["state"]="carp"; return "ok",200
-        if not j.get("found"): msg=f"{s['code']} – {month}\nNo cashback recorded." if s["lang"]=="en" else f"{s['code']} – {month}\nபதிவு இல்லை."
+        if j is None: send_text(frm,server_down_msg(s["lang"])); s["state"]="carp"; save_session(frm,s); return "ok",200
+        if not j.get("found"):
+            msg=f"{s['code']} – {month}\nNo cashback recorded." if s["lang"]=="en" else f"{s['code']} – {month}\nபதிவு இல்லை."
         else:
             name=j.get("name",""); amt=j.get("cashback_amount",0)
-            msg=(f"Hello {name}, you got Rs.{amt} in {month}.\n\nIt will be transferred at month end. For queries, call {GAJA_PHONE}."
+            msg=(f"Hello {name}, you got Rs.{amt} in {month}.\n\nIt will be transferred at month end. Call {GAJA_PHONE}."
                  if s["lang"]=="en" else
                  f"வணக்கம் {name}, நீங்கள் {month} மாதத்தில் ரூ.{amt} பெற்றுள்ளீர்கள்.\n\nமாத இறுதியில் வங்கிக்குச் செலுத்தப்படும். {GAJA_PHONE} அழைக்கவும்.")
             log_pumble(f"💰 Cashback for {frm}\nCode: {s['code']}\nMonth: {month}\nAmount: {amt}")
-        send_text(frm,msg); s["state"]="carp"; return "ok",200
+        send_text(frm,msg); s["state"]="carp"; save_session(frm,s); return "ok",200
 
+    save_session(frm,s)
     return "ok",200
 
 if __name__=="__main__":
