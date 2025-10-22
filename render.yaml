@@ -3,7 +3,7 @@ services:
     name: gaja-whatsapp-bot
     env: python
     plan: free
-    buildCommand: ""
+    buildCommand: "pip install -r requirements.txt"
     startCommand: python app.py
     autoDeploy: true
     envVars:
@@ -17,5 +17,23 @@ services:
         sync: false
       - key: APPS_SECRET
         sync: false
-      - key: SCHEME_IMAGE_URL
+      - key: REDIS_URL
+        sync: false
+      - key: GAJA_PHONE
+        value: "+91-XXXXXXXXXX"
+      - key: CATALOG_URL
+        sync: false
+      - key: CATALOG_FILENAME
+        value: "GAJA-Catalogue.pdf"
+      - key: PUMBLE_WEBHOOK_URL
+        sync: false
+      - key: SCHEME_IMG1
+        sync: false
+      - key: SCHEME_IMG2
+        sync: false
+      - key: SCHEME_IMG3
+        sync: false
+      - key: SCHEME_IMG4
+        sync: false
+      - key: SCHEME_IMG5
         sync: false
