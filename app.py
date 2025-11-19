@@ -1,7 +1,8 @@
 import os, requests, json
 from flask import Flask, request
-import redis
 from datetime import datetime
+import time
+from threading import Lock
 
 # ========= ENV =========
 ACCESS_TOKEN    = os.getenv("ACCESS_TOKEN")
@@ -20,27 +21,50 @@ SCHEME_IMAGES   = [os.getenv(k, "") for k in SCHEME_IMG_KEYS if os.getenv(k, "")
 GRAPH   = "https://graph.facebook.com/v20.0"
 HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type":"application/json"}
 
-# ========= REDIS =========
-REDIS_URL = os.getenv("REDIS_URL")
-r = redis.from_url(REDIS_URL, decode_responses=True)
+# ========= IN-MEMORY STORAGE (REPLACES REDIS) =========
+memory_sessions = {}
+memory_messages = {}
+session_lock = Lock()
 
-# ========= SESSION HELPERS =========
 def save_session(frm, s):
-    ttl = 120 if s["state"] in ("lang","main") else 300
-    r.setex(f"sess:{frm}", ttl, json.dumps(s))
+    with session_lock:
+        memory_sessions[frm] = {
+            'data': s,
+            'expires': time.time() + (120 if s["state"] in ("lang","main") else 300)
+        }
 
 def sget(phone):
-    key = f"sess:{phone}"
-    s = r.get(key)
-    if s: s = json.loads(s)
-    else: s = {"lang": "en", "state": "lang"}
-    save_session(phone, s)
-    return s
+    with session_lock:
+        # Clean expired sessions
+        current_time = time.time()
+        expired = [k for k, v in memory_sessions.items() if v['expires'] < current_time]
+        for k in expired:
+            del memory_sessions[k]
+        
+        # Get or create session
+        if phone in memory_sessions and memory_sessions[phone]['expires'] > current_time:
+            s = memory_sessions[phone]['data']
+        else:
+            s = {"lang": "en", "state": "lang"}
+        
+        save_session(phone, s)
+        return s
 
 def already_processed(mid: str) -> bool:
     if not mid: return False
-    key = f"msg:{mid}"
-    return not r.set(name=key, value="1", nx=True, ex=600)
+    with session_lock:
+        current_time = time.time()
+        # Clean old messages
+        expired = [k for k, v in memory_messages.items() if v < current_time]
+        for k in expired:
+            del memory_messages[k]
+        
+        # Check if processed
+        if mid in memory_messages:
+            return True
+        
+        memory_messages[mid] = current_time + 600
+        return False
 
 # ========= MESSAGING HELPERS =========
 def send_text(to, body):
@@ -83,7 +107,7 @@ def send_interactive_buttons(to, body_text, buttons):
         pass
 
 def send_interactive_list(to, body_text, button_text, sections):
-    """Send interactive list message (up to 10 items per section)"""
+    """Send interactive list message"""
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -130,7 +154,6 @@ def invalid(to, lang):
     send_text(to, msg)
 
 def ask_language(to):
-    """Send language selection with buttons"""
     send_interactive_buttons(
         to,
         "Welcome to GAJA! Please select your language.\n\nGAJA-விற்கு வரவேற்கிறோம்! உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்.",
@@ -141,7 +164,6 @@ def ask_language(to):
     )
 
 def main_menu(to, lang):
-    """Send main menu with buttons"""
     if lang == "en":
         send_interactive_buttons(
             to,
@@ -164,7 +186,6 @@ def main_menu(to, lang):
         )
 
 def customer_menu(to, lang):
-    """Send customer menu with buttons"""
     if lang == "en":
         send_interactive_buttons(
             to,
@@ -185,7 +206,6 @@ def customer_menu(to, lang):
         )
 
 def carpenter_menu(to, lang):
-    """Send carpenter menu with buttons"""
     if lang == "en":
         send_interactive_buttons(
             to,
@@ -241,7 +261,7 @@ def fetch_cashback(code, month):
 app = Flask(__name__)
 
 @app.get("/")
-def health(): return "GAJA bot running", 200
+def health(): return "GAJA bot running (No Redis)", 200
 
 @app.get("/webhook")
 def verify():
@@ -253,7 +273,6 @@ def verify():
 def incoming():
     data = request.get_json(silent=True) or {}
     
-    # Handle regular text messages
     try:
         msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
     except:
@@ -269,12 +288,10 @@ def incoming():
     if msg.get("type") == "interactive":
         interactive = msg.get("interactive", {})
         
-        # Button reply
         if interactive.get("type") == "button_reply":
             button_id = interactive.get("button_reply", {}).get("id", "")
             return handle_button_click(frm, s, button_id)
         
-        # List reply
         elif interactive.get("type") == "list_reply":
             list_id = interactive.get("list_reply", {}).get("id", "")
             return handle_list_click(frm, s, list_id)
@@ -284,29 +301,25 @@ def incoming():
         text = (msg.get("text", {}).get("body") or "").strip()
         if not text: return "ok", 200
         
-        # EXIT command
         if text.upper() in ("EXIT", "STOP"):
-            r.delete(f"sess:{frm}")
+            with session_lock:
+                if frm in memory_sessions:
+                    del memory_sessions[frm]
             send_text(frm, "✅ Session ended. Send any message to start again.")
             return "ok", 200
         
-        # Main menu shortcut
         if text == "9":
             s["state"] = "lang"
             ask_language(frm)
             save_session(frm, s)
             return "ok", 200
         
-        # Handle text input for carpenter code
         if s["state"] == "cb_code":
             return handle_carpenter_code_input(frm, s, text)
     
     return "ok", 200
 
 def handle_button_click(frm, s, button_id):
-    """Handle interactive button clicks"""
-    
-    # Language selection
     if button_id == "lang_en":
         s["lang"] = "en"
         s["state"] = "main"
@@ -321,7 +334,6 @@ def handle_button_click(frm, s, button_id):
         save_session(frm, s)
         return "ok", 200
     
-    # Main menu
     elif button_id == "main_customer":
         s["state"] = "cust"
         customer_menu(frm, s["lang"])
@@ -342,10 +354,9 @@ def handle_button_click(frm, s, button_id):
         save_session(frm, s)
         return "ok", 200
     
-    # Customer menu
     elif button_id == "cust_catalog":
         if CATALOG_URL:
-            send_document(frm, CATALOG_URL, "📖 GAJA Product Catalogue", CATALOG_FILENAME)
+            send_document(frm, CATALOG_URL, "📖 GAJA Catalogue", CATALOG_FILENAME)
             log_pumble(f"📂 Catalogue sent to {frm}")
         else:
             send_text(frm, "Catalogue not available." if s["lang"]=="en" else "கையேடு கிடைக்கவில்லை.")
@@ -357,7 +368,6 @@ def handle_button_click(frm, s, button_id):
         save_session(frm, s)
         return "ok", 200
     
-    # Carpenter menu
     elif button_id == "carp_register":
         msg = ("Please share your contact details:\n\n📱 Phone Number\n👤 Full Name\n📍 Location\n\nOur team will contact you for registration." 
                if s["lang"]=="en" else 
@@ -380,15 +390,11 @@ def handle_button_click(frm, s, button_id):
         save_session(frm, s)
         return "ok", 200
     
-    # Unknown button
     else:
         invalid(frm, s["lang"])
         return "ok", 200
 
 def handle_list_click(frm, s, list_id):
-    """Handle interactive list selections"""
-    
-    # Month selection (format: month_0, month_1, month_2)
     if list_id.startswith("month_"):
         try:
             idx = int(list_id.split("_")[1])
@@ -397,7 +403,6 @@ def handle_list_click(frm, s, list_id):
             invalid(frm, s["lang"])
             return "ok", 200
         
-        # Fetch cashback
         j = fetch_cashback(s["code"], month)
         
         if j is None:
@@ -420,8 +425,6 @@ def handle_list_click(frm, s, list_id):
             log_pumble(f"💰 Cashback query: {frm} | Code: {s['code']} | Month: {month} | Amount: ₹{amt}")
         
         send_text(frm, msg)
-        
-        # Return to carpenter menu
         s["state"] = "carp"
         carpenter_menu(frm, s["lang"])
         save_session(frm, s)
@@ -430,11 +433,9 @@ def handle_list_click(frm, s, list_id):
     return "ok", 200
 
 def handle_carpenter_code_input(frm, s, text):
-    """Handle text input for carpenter code"""
     code = text.strip().upper()
     s["code"] = code
     
-    # Fetch available months
     months = fetch_months(3)
     
     if not months:
@@ -446,7 +447,6 @@ def handle_carpenter_code_input(frm, s, text):
     
     s["months"] = months
     
-    # Send month selection as interactive list
     body_text = (f"✅ Code: {code}\n\nSelect a month to check cashback:" 
                  if s["lang"]=="en" else 
                  f"✅ குறியீடு: {code}\n\nகேஷ்பேக் சரிபார்க்க மாதத்தைத் தேர்ந்தெடுக்கவும்:")
@@ -473,4 +473,5 @@ def handle_carpenter_code_input(frm, s, text):
 if __name__ == "__main__":
     from waitress import serve
     port = int(os.getenv("PORT", "10000"))
+    print(f"🚀 Starting GAJA Bot (No Redis) on port {port}")
     serve(app, host="0.0.0.0", port=port)
