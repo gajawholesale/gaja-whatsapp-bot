@@ -1,10 +1,51 @@
-import os, requests, json
-from flask import Flask, request
-from datetime import datetime
-import time
-from threading import Lock
+import os
+import sys
+import logging
+
+# Setup logging FIRST
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
+
+logger.info("=" * 50)
+logger.info("STARTING GAJA BOT")
+logger.info("=" * 50)
+
+try:
+    import requests
+    logger.info("✓ requests imported")
+except Exception as e:
+    logger.error(f"✗ Failed to import requests: {e}")
+    sys.exit(1)
+
+try:
+    import json
+    logger.info("✓ json imported")
+except Exception as e:
+    logger.error(f"✗ Failed to import json: {e}")
+    sys.exit(1)
+
+try:
+    from flask import Flask, request
+    logger.info("✓ Flask imported")
+except Exception as e:
+    logger.error(f"✗ Failed to import Flask: {e}")
+    sys.exit(1)
+
+try:
+    from datetime import datetime
+    import time
+    from threading import Lock
+    logger.info("✓ datetime, time, threading imported")
+except Exception as e:
+    logger.error(f"✗ Failed to import standard libraries: {e}")
+    sys.exit(1)
 
 # ========= ENV =========
+logger.info("Loading environment variables...")
 ACCESS_TOKEN    = os.getenv("ACCESS_TOKEN")
 PHONE_ID        = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN    = os.getenv("VERIFY_TOKEN", "gaja-verify-123")
@@ -15,13 +56,19 @@ CATALOG_URL     = os.getenv("CATALOG_URL", "")
 CATALOG_FILENAME= os.getenv("CATALOG_FILENAME", "GAJA-Catalogue.pdf")
 PUMBLE_WEBHOOK  = os.getenv("PUMBLE_WEBHOOK_URL", "")
 
+logger.info(f"ACCESS_TOKEN: {'SET' if ACCESS_TOKEN else 'NOT SET'}")
+logger.info(f"PHONE_ID: {'SET' if PHONE_ID else 'NOT SET'}")
+logger.info(f"VERIFY_TOKEN: {VERIFY_TOKEN}")
+logger.info(f"APPS_URL: {'SET' if APPS_URL else 'NOT SET'}")
+
 SCHEME_IMG_KEYS = ["SCHEME_IMG1","SCHEME_IMG2","SCHEME_IMG3","SCHEME_IMG4","SCHEME_IMG5"]
 SCHEME_IMAGES   = [os.getenv(k, "") for k in SCHEME_IMG_KEYS if os.getenv(k, "")]
 
 GRAPH   = "https://graph.facebook.com/v20.0"
 HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type":"application/json"}
 
-# ========= IN-MEMORY STORAGE (REPLACES REDIS) =========
+# ========= IN-MEMORY STORAGE =========
+logger.info("Initializing in-memory storage...")
 memory_sessions = {}
 memory_messages = {}
 session_lock = Lock()
@@ -35,13 +82,11 @@ def save_session(frm, s):
 
 def sget(phone):
     with session_lock:
-        # Clean expired sessions
         current_time = time.time()
         expired = [k for k, v in memory_sessions.items() if v['expires'] < current_time]
         for k in expired:
             del memory_sessions[k]
         
-        # Get or create session
         if phone in memory_sessions and memory_sessions[phone]['expires'] > current_time:
             s = memory_sessions[phone]['data']
         else:
@@ -54,12 +99,10 @@ def already_processed(mid: str) -> bool:
     if not mid: return False
     with session_lock:
         current_time = time.time()
-        # Clean old messages
         expired = [k for k, v in memory_messages.items() if v < current_time]
         for k in expired:
             del memory_messages[k]
         
-        # Check if processed
         if mid in memory_messages:
             return True
         
@@ -71,10 +114,10 @@ def send_text(to, body):
     try:
         requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS,
             json={"messaging_product":"whatsapp","to":to,"text":{"body":body}}, timeout=15)
-    except: pass
+    except Exception as e:
+        logger.error(f"Error sending text: {e}")
 
 def send_interactive_buttons(to, body_text, buttons):
-    """Send interactive button message (max 3 buttons)"""
     if len(buttons) > 3:
         buttons = buttons[:3]
     
@@ -103,11 +146,9 @@ def send_interactive_buttons(to, body_text, buttons):
     try:
         requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
     except Exception as e:
-        print(f"Button error: {e}")
-        pass
+        logger.error(f"Error sending buttons: {e}")
 
 def send_interactive_list(to, body_text, button_text, sections):
-    """Send interactive list message"""
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -126,27 +167,32 @@ def send_interactive_list(to, body_text, button_text, sections):
     try:
         requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
     except Exception as e:
-        print(f"List error: {e}")
-        pass
+        logger.error(f"Error sending list: {e}")
 
 def send_image(to, url, caption=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"image","image":{"link":url}}
     if caption: payload["image"]["caption"] = caption
-    try: requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-    except: pass
+    try:
+        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+    except Exception as e:
+        logger.error(f"Error sending image: {e}")
 
 def send_document(to, link, caption=None, filename=None):
     doc = {"link": link}
     if filename: doc["filename"] = filename
     payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":doc}
     if caption: payload["document"]["caption"] = caption
-    try: requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-    except: pass
+    try:
+        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+    except Exception as e:
+        logger.error(f"Error sending document: {e}")
 
 def log_pumble(msg: str):
     if not PUMBLE_WEBHOOK: return
-    try: requests.post(PUMBLE_WEBHOOK, json={"text": msg}, timeout=5)
-    except: pass
+    try:
+        requests.post(PUMBLE_WEBHOOK, json={"text": msg}, timeout=5)
+    except Exception as e:
+        logger.error(f"Error logging to Pumble: {e}")
 
 # ========= UI MESSAGES =========
 def invalid(to, lang):
@@ -246,7 +292,9 @@ def fetch_months(n=3):
         if not r2.ok: return None
         data = r2.json()
         return data.get("months", [])
-    except: return None
+    except Exception as e:
+        logger.error(f"Error fetching months: {e}")
+        return None
 
 def fetch_cashback(code, month):
     try:
@@ -255,51 +303,64 @@ def fetch_cashback(code, month):
         r2 = requests.get(APPS_URL, params=params, timeout=10)
         if not r2.ok: return None
         return r2.json()
-    except: return None
+    except Exception as e:
+        logger.error(f"Error fetching cashback: {e}")
+        return None
 
 # ========= Flask App =========
+logger.info("Initializing Flask app...")
 app = Flask(__name__)
 
 @app.get("/")
-def health(): return "GAJA bot running (No Redis)", 200
+def health():
+    logger.info("Health check endpoint called")
+    return "GAJA bot running (No Redis) ✓", 200
 
 @app.get("/webhook")
 def verify():
+    logger.info("Webhook verification called")
     if request.args.get("hub.mode")=="subscribe" and request.args.get("hub.verify_token")==VERIFY_TOKEN:
         return request.args.get("hub.challenge"), 200
     return "forbidden", 403
 
 @app.post("/webhook")
 def incoming():
+    logger.info("Webhook POST received")
     data = request.get_json(silent=True) or {}
     
     try:
         msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
-    except:
+        logger.info(f"Message from: {msg.get('from')}")
+    except Exception as e:
+        logger.error(f"Error parsing message: {e}")
         return "ok", 200
 
     mid = msg.get("id")
-    if already_processed(mid): return "ok", 200
+    if already_processed(mid):
+        logger.info(f"Message {mid} already processed")
+        return "ok", 200
     
     frm = msg["from"]
     s = sget(frm)
     
-    # Handle interactive button/list replies
     if msg.get("type") == "interactive":
         interactive = msg.get("interactive", {})
         
         if interactive.get("type") == "button_reply":
             button_id = interactive.get("button_reply", {}).get("id", "")
+            logger.info(f"Button clicked: {button_id}")
             return handle_button_click(frm, s, button_id)
         
         elif interactive.get("type") == "list_reply":
             list_id = interactive.get("list_reply", {}).get("id", "")
+            logger.info(f"List item selected: {list_id}")
             return handle_list_click(frm, s, list_id)
     
-    # Handle regular text messages
     elif msg.get("type") == "text":
         text = (msg.get("text", {}).get("body") or "").strip()
         if not text: return "ok", 200
+        
+        logger.info(f"Text received: {text[:20]}...")
         
         if text.upper() in ("EXIT", "STOP"):
             with session_lock:
@@ -319,6 +380,7 @@ def incoming():
     
     return "ok", 200
 
+# Import handlers (keep existing code)
 def handle_button_click(frm, s, button_id):
     if button_id == "lang_en":
         s["lang"] = "en"
@@ -470,8 +532,20 @@ def handle_carpenter_code_input(frm, s, text):
     save_session(frm, s)
     return "ok", 200
 
+logger.info("Flask app initialized")
+logger.info("=" * 50)
+
 if __name__ == "__main__":
-    from waitress import serve
-    port = int(os.getenv("PORT", "10000"))
-    print(f"🚀 Starting GAJA Bot (No Redis) on port {port}")
-    serve(app, host="0.0.0.0", port=port)
+    try:
+        port = int(os.getenv("PORT", "10000"))
+        logger.info(f"🚀 Starting GAJA Bot on port {port}")
+        logger.info(f"Access at: http://0.0.0.0:{port}")
+        
+        # Use Flask development server (simpler, more reliable)
+        app.run(host="0.0.0.0", port=port, debug=False)
+        
+    except Exception as e:
+        logger.error(f"FATAL ERROR starting server: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        sys.exit(1)
