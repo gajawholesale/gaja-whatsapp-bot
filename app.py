@@ -110,18 +110,38 @@ def already_processed(mid: str) -> bool:
         return False
 
 # ========= MESSAGING HELPERS =========
-def send_text(to, body):
+# ---------- Improved send helpers ----------
+def _do_post(payload):
+    url = f"{GRAPH}/{PHONE_ID}/messages"
+    logger.debug("Outgoing POST url: %s", url)
+    logger.debug("Outgoing headers: %s", {k: HEADERS.get(k) for k in ('Authorization','Content-Type')})
+    logger.debug("Outgoing payload: %s", payload)
     try:
-        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS,
-            json={"messaging_product":"whatsapp","to":to,"text":{"body":body}}, timeout=15)
-        logger.info(f"Text sent to {to}: {response.status_code}")
+        r = requests.post(url, headers=HEADERS, json=payload, timeout=15)
+        logger.info("POST %s -> %s", url, r.status_code)
+        try:
+            logger.debug("Response body: %s", r.text)
+        except Exception:
+            logger.debug("Could not decode response body")
+        return r
     except Exception as e:
-        logger.error(f"Error sending text: {e}")
+        logger.exception("Error doing POST to WhatsApp API: %s", e)
+        return None
+
+def send_text(to, body):
+    payload = {"messaging_product":"whatsapp","to":to,"text":{"body":body}}
+    r = _do_post(payload)
+    if r is None:
+        logger.error("send_text failed at network level for %s", to)
+    elif not r.ok:
+        logger.error("send_text returned non-OK: %s %s", r.status_code, r.text)
+    else:
+        logger.info("Text sent to %s OK", to)
 
 def send_interactive_buttons(to, body_text, buttons):
     if len(buttons) > 3:
         buttons = buttons[:3]
-    
+
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -143,12 +163,13 @@ def send_interactive_buttons(to, body_text, buttons):
             }
         }
     }
-    
-    try:
-        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-        logger.info(f"Buttons sent to {to}: {response.status_code}")
-    except Exception as e:
-        logger.error(f"Error sending buttons: {e}")
+    r = _do_post(payload)
+    if r is None:
+        logger.error("send_interactive_buttons failed at network level for %s", to)
+    elif not r.ok:
+        logger.error("send_interactive_buttons returned non-OK: %s %s", r.status_code, r.text)
+    else:
+        logger.info("Buttons sent to %s OK", to)
 
 def send_interactive_list(to, body_text, button_text, sections):
     payload = {
@@ -165,32 +186,35 @@ def send_interactive_list(to, body_text, button_text, sections):
             }
         }
     }
-    
-    try:
-        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-        logger.info(f"List sent to {to}: {response.status_code}")
-    except Exception as e:
-        logger.error(f"Error sending list: {e}")
+    r = _do_post(payload)
+    if r is None:
+        logger.error("send_interactive_list failed at network level for %s", to)
+    elif not r.ok:
+        logger.error("send_interactive_list returned non-OK: %s %s", r.status_code, r.text)
+    else:
+        logger.info("List sent to %s OK", to)
 
 def send_image(to, url, caption=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"image","image":{"link":url}}
     if caption: payload["image"]["caption"] = caption
-    try:
-        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-        logger.info(f"Image sent to {to}: {response.status_code}")
-    except Exception as e:
-        logger.error(f"Error sending image: {e}")
+    r = _do_post(payload)
+    if r is None or not r.ok:
+        logger.error("send_image error: %s", getattr(r, "text", None))
+    else:
+        logger.info("Image sent to %s OK", to)
 
 def send_document(to, link, caption=None, filename=None):
     doc = {"link": link}
     if filename: doc["filename"] = filename
     payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":doc}
     if caption: payload["document"]["caption"] = caption
-    try:
-        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
-        logger.info(f"Document sent to {to}: {response.status_code}")
-    except Exception as e:
-        logger.error(f"Error sending document: {e}")
+    r = _do_post(payload)
+    if r is None or not r.ok:
+        logger.error("send_document error: %s", getattr(r, "text", None))
+    else:
+        logger.info("Document sent to %s OK", to)
+# ---------- end helpers ----------
+
 
 def log_pumble(msg: str):
     if not PUMBLE_WEBHOOK: return
@@ -322,6 +346,24 @@ app = Flask(__name__)
 def health():
     logger.info("Health check endpoint called")
     return "GAJA bot running (No Redis) ✓", 200
+@app.get("/selftest")
+def selftest():
+    env_ok = {
+        "ACCESS_TOKEN_set": bool(ACCESS_TOKEN),
+        "PHONE_ID_set": bool(PHONE_ID),
+        "GRAPH": GRAPH,
+        "HEADERS_preview": {"Authorization": HEADERS.get("Authorization")[:10] + "..." if HEADERS.get("Authorization") else "None"}
+    }
+    if not ACCESS_TOKEN or not PHONE_ID:
+        logger.error("Selftest missing ACCESS_TOKEN or PHONE_ID")
+        return {"ok": False, "reason": "ACCESS_TOKEN or PHONE_ID not set", "env": env_ok}, 400
+
+    to = os.getenv("SELFTEST_PHONE", GAJA_PHONE)
+    msg = "GAJA selftest: outgoing POST from bot at " + datetime.utcnow().isoformat() + "Z"
+    payload = {"messaging_product":"whatsapp","to":to,"text":{"body":msg}}
+    r = _do_post(payload)
+    return {"ok": True, "env": env_ok, "test_status": r.status_code if r else None, "test_response": (r.text if r else None)}, 200
+
 
 @app.get("/webhook")
 def verify():
