@@ -14,6 +14,7 @@ logger.info("=" * 50)
 logger.info("STARTING GAJA BOT")
 logger.info("=" * 50)
 
+
 try:
     import requests
     logger.info("✓ requests imported")
