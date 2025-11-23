@@ -112,8 +112,9 @@ def already_processed(mid: str) -> bool:
 # ========= MESSAGING HELPERS =========
 def send_text(to, body):
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS,
+        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS,
             json={"messaging_product":"whatsapp","to":to,"text":{"body":body}}, timeout=15)
+        logger.info(f"Text sent to {to}: {response.status_code}")
     except Exception as e:
         logger.error(f"Error sending text: {e}")
 
@@ -144,7 +145,8 @@ def send_interactive_buttons(to, body_text, buttons):
     }
     
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        logger.info(f"Buttons sent to {to}: {response.status_code}")
     except Exception as e:
         logger.error(f"Error sending buttons: {e}")
 
@@ -165,7 +167,8 @@ def send_interactive_list(to, body_text, button_text, sections):
     }
     
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        logger.info(f"List sent to {to}: {response.status_code}")
     except Exception as e:
         logger.error(f"Error sending list: {e}")
 
@@ -173,7 +176,8 @@ def send_image(to, url, caption=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"image","image":{"link":url}}
     if caption: payload["image"]["caption"] = caption
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        logger.info(f"Image sent to {to}: {response.status_code}")
     except Exception as e:
         logger.error(f"Error sending image: {e}")
 
@@ -183,7 +187,8 @@ def send_document(to, link, caption=None, filename=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":doc}
     if caption: payload["document"]["caption"] = caption
     try:
-        requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        response = requests.post(f"{GRAPH}/{PHONE_ID}/messages", headers=HEADERS, json=payload, timeout=15)
+        logger.info(f"Document sent to {to}: {response.status_code}")
     except Exception as e:
         logger.error(f"Error sending document: {e}")
 
@@ -200,6 +205,7 @@ def invalid(to, lang):
     send_text(to, msg)
 
 def ask_language(to):
+    logger.info(f"Sending language selection to {to}")
     send_interactive_buttons(
         to,
         "Welcome to GAJA! Please select your language.\n\nGAJA-விற்கு வரவேற்கிறோம்! உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்.",
@@ -210,6 +216,7 @@ def ask_language(to):
     )
 
 def main_menu(to, lang):
+    logger.info(f"Sending main menu to {to} in {lang}")
     if lang == "en":
         send_interactive_buttons(
             to,
@@ -330,7 +337,7 @@ def incoming():
     
     try:
         msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        logger.info(f"Message from: {msg.get('from')}")
+        logger.info(f"Message from: {msg.get('from')}, type: {msg.get('type')}")
     except Exception as e:
         logger.error(f"Error parsing message: {e}")
         return "ok", 200
@@ -343,6 +350,16 @@ def incoming():
     frm = msg["from"]
     s = sget(frm)
     
+    logger.info(f"Current state for {frm}: {s['state']}, lang: {s['lang']}")
+    
+    # ALWAYS send language selection for new users or those in lang state
+    if s["state"] == "lang" and msg.get("type") == "text":
+        logger.info("New user detected, sending language selection")
+        ask_language(frm)
+        save_session(frm, s)
+        return "ok", 200
+    
+    # Handle interactive button/list replies
     if msg.get("type") == "interactive":
         interactive = msg.get("interactive", {})
         
@@ -356,32 +373,38 @@ def incoming():
             logger.info(f"List item selected: {list_id}")
             return handle_list_click(frm, s, list_id)
     
+    # Handle regular text messages
     elif msg.get("type") == "text":
         text = (msg.get("text", {}).get("body") or "").strip()
         if not text: return "ok", 200
         
-        logger.info(f"Text received: {text[:20]}...")
+        logger.info(f"Text received: '{text}' in state: {s['state']}")
         
+        # EXIT command
         if text.upper() in ("EXIT", "STOP"):
+            logger.info(f"EXIT command from {frm}")
             with session_lock:
                 if frm in memory_sessions:
                     del memory_sessions[frm]
             send_text(frm, "✅ Session ended. Send any message to start again.")
             return "ok", 200
         
+        # Menu shortcut
         if text == "9":
             s["state"] = "lang"
             ask_language(frm)
             save_session(frm, s)
             return "ok", 200
         
+        # Handle carpenter code input
         if s["state"] == "cb_code":
             return handle_carpenter_code_input(frm, s, text)
     
     return "ok", 200
 
-# Import handlers (keep existing code)
 def handle_button_click(frm, s, button_id):
+    logger.info(f"Processing button: {button_id}")
+    
     if button_id == "lang_en":
         s["lang"] = "en"
         s["state"] = "main"
@@ -453,6 +476,7 @@ def handle_button_click(frm, s, button_id):
         return "ok", 200
     
     else:
+        logger.warning(f"Unknown button: {button_id}")
         invalid(frm, s["lang"])
         return "ok", 200
 
@@ -461,7 +485,9 @@ def handle_list_click(frm, s, list_id):
         try:
             idx = int(list_id.split("_")[1])
             month = s["months"][idx]
-        except:
+            logger.info(f"Month selected: {month}")
+        except Exception as e:
+            logger.error(f"Error parsing month selection: {e}")
             invalid(frm, s["lang"])
             return "ok", 200
         
@@ -497,6 +523,7 @@ def handle_list_click(frm, s, list_id):
 def handle_carpenter_code_input(frm, s, text):
     code = text.strip().upper()
     s["code"] = code
+    logger.info(f"Carpenter code entered: {code}")
     
     months = fetch_months(3)
     
@@ -532,7 +559,7 @@ def handle_carpenter_code_input(frm, s, text):
     save_session(frm, s)
     return "ok", 200
 
-logger.info("Flask app initialized")
+logger.info("Flask app initialized successfully")
 logger.info("=" * 50)
 
 if __name__ == "__main__":
@@ -540,8 +567,9 @@ if __name__ == "__main__":
         port = int(os.getenv("PORT", "10000"))
         logger.info(f"🚀 Starting GAJA Bot on port {port}")
         logger.info(f"Access at: http://0.0.0.0:{port}")
+        logger.info("=" * 50)
         
-        # Use Flask development server (simpler, more reliable)
+        # Use Flask development server
         app.run(host="0.0.0.0", port=port, debug=False)
         
     except Exception as e:
