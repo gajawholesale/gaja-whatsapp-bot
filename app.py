@@ -111,6 +111,7 @@ def already_processed(mid: str) -> bool:
 
 # ========= MESSAGING HELPERS =========
 # ---------- Improved send helpers ----------
+# ---------- Debuggable _do_post ----------
 def _do_post(payload):
     url = f"{GRAPH}/{PHONE_ID}/messages"
     logger.debug("Outgoing POST url: %s", url)
@@ -123,10 +124,13 @@ def _do_post(payload):
             logger.debug("Response body: %s", r.text)
         except Exception:
             logger.debug("Could not decode response body")
-        return r
+        return {"ok": True, "status_code": r.status_code, "text": r.text}
     except Exception as e:
+        # Return structured error info (also logged)
         logger.exception("Error doing POST to WhatsApp API: %s", e)
-        return None
+        return {"ok": False, "exception": str(e)}
+# ---------- end _do_post ----------
+
 
 def send_text(to, body):
     payload = {"messaging_product":"whatsapp","to":to,"text":{"body":body}}
@@ -347,6 +351,7 @@ def health():
     logger.info("Health check endpoint called")
     return "GAJA bot running (No Redis) ✓", 200
 @app.get("/selftest")
+@app.get("/selftest")
 def selftest():
     env_ok = {
         "ACCESS_TOKEN_set": bool(ACCESS_TOKEN),
@@ -361,8 +366,10 @@ def selftest():
     to = os.getenv("SELFTEST_PHONE", GAJA_PHONE)
     msg = "GAJA selftest: outgoing POST from bot at " + datetime.utcnow().isoformat() + "Z"
     payload = {"messaging_product":"whatsapp","to":to,"text":{"body":msg}}
-    r = _do_post(payload)
-    return {"ok": True, "env": env_ok, "test_status": r.status_code if r else None, "test_response": (r.text if r else None)}, 200
+    result = _do_post(payload)
+
+    # result is a dict per the new _do_post
+    return {"ok": True, "env": env_ok, "post_result": result}, 200
 
 
 @app.get("/webhook")
