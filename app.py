@@ -353,6 +353,103 @@ def health():
     return "GAJA bot running (No Redis) ✓", 200
 @app.get("/selftest")
 @app.get("/selftest")
+@app.get("/debug")
+def debug():
+    """
+    Diagnostic endpoint to check:
+      - env vars (ACCESS_TOKEN, PHONE_ID)
+      - GET /<PHONE_ID>?fields=id,display_phone_number
+      - GET /me
+      - optionally GET /<WABA_ID>/phone_numbers if WABA_ID is set
+    Returns structured JSON with status codes and response bodies (or exception text).
+    """
+    env = {
+        "ACCESS_TOKEN_set": bool(ACCESS_TOKEN),
+        "PHONE_ID_set": bool(PHONE_ID),
+        "GRAPH": GRAPH,
+        "PHONE_ID_value_preview": (str(PHONE_ID)[:6] + "..." if PHONE_ID else None),
+        "HEADERS_preview": {
+            "Authorization": (HEADERS.get("Authorization")[:10] + "..." if HEADERS.get("Authorization") else None),
+            "Content-Type": HEADERS.get("Content-Type")
+        },
+        "GAJA_PHONE_preview": (GAJA_PHONE if GAJA_PHONE else None),
+    }
+
+    results = {"env": env, "checks": {}}
+
+    # Helper to perform GETs and return structured info
+    def safe_get(url, params=None, note=None):
+        entry = {"url": url, "note": note}
+        try:
+            r = requests.get(url, headers=HEADERS, params=params, timeout=12)
+            entry["ok"] = True
+            entry["status_code"] = r.status_code
+            # limit response logging length so logs don't blow up
+            text = r.text or ""
+            entry["text_preview"] = text if len(text) < 4000 else text[:4000] + "...(truncated)"
+            logger.info("DEBUG GET %s -> %s", url, r.status_code)
+            logger.debug("DEBUG body: %s", entry["text_preview"])
+        except Exception as e:
+            entry["ok"] = False
+            entry["exception"] = str(e)
+            logger.exception("DEBUG GET failed for %s : %s", url, e)
+        return entry
+
+    # 1) Check PHONE_ID object
+    if PHONE_ID:
+        url_phone = f"{GRAPH}/{PHONE_ID}"
+        params = {"fields": "id,display_phone_number"}
+        results["checks"]["phone_id_get"] = safe_get(url_phone, params=params, note="Check that PHONE_ID exists and is readable")
+    else:
+        results["checks"]["phone_id_get"] = {"ok": False, "reason": "PHONE_ID not set"}
+
+    # 2) Check /me for token validity
+    url_me = f"{GRAPH}/me"
+    results["checks"]["me_get"] = safe_get(url_me, note="Check token validity and which app/account it belongs to")
+
+    # 3) If you have a WABA_ID env var, try to list phone_numbers for that WABA
+    WABA_ID = os.getenv("WABA_ID", "")
+    if WABA_ID:
+        url_waba = f"{GRAPH}/{WABA_ID}/phone_numbers"
+        results["checks"]["waba_phone_numbers"] = safe_get(url_waba, note="List phone numbers for WABA_ID")
+        results["env"]["WABA_ID_preview"] = (WABA_ID[:8] + "..." if WABA_ID else None)
+    else:
+        results["checks"]["waba_phone_numbers"] = {"ok": False, "reason": "WABA_ID not set (optional)"}
+
+    # 4) Quick connectivity check to Graph root
+    try:
+        r_root = requests.get(GRAPH, headers=HEADERS, timeout=8)
+        results["checks"]["graph_root"] = {"ok": True, "status_code": r_root.status_code, "text_preview": (r_root.text[:300] + "..." if r_root.text else "")}
+    except Exception as e:
+        results["checks"]["graph_root"] = {"ok": False, "exception": str(e)}
+        logger.exception("DEBUG graph root connectivity failed: %s", e)
+
+    # 5) Advice summary (basic)
+    advice = []
+    ph = results["checks"].get("phone_id_get", {})
+    me = results["checks"].get("me_get", {})
+
+    if not env["ACCESS_TOKEN_set"]:
+        advice.append("ACCESS_TOKEN is not set. Set a valid token in environment.")
+    if not env["PHONE_ID_set"]:
+        advice.append("PHONE_ID is not set. Set the proper Phone Number ID from WhatsApp Manager.")
+    if ph.get("ok") is True and ph.get("status_code") == 200:
+        advice.append("PHONE_ID exists and is reachable with this token.")
+    else:
+        if ph.get("ok") is False and "exception" in ph:
+            advice.append("Network/connection error when contacting Graph for PHONE_ID (see exception).")
+        else:
+            advice.append("PHONE_ID lookup returned non-200; either PHONE_ID is wrong or token lacks permission.")
+
+    if me.get("ok") is True and me.get("status_code") == 200:
+        advice.append("Access token appears valid (GET /me succeeded).")
+    else:
+        advice.append("GET /me failed: token may be invalid or expired, or permissions are missing.")
+
+    results["advice_summary"] = advice
+
+    return results, 200
+
 def selftest():
     env_ok = {
         "ACCESS_TOKEN_set": bool(ACCESS_TOKEN),
