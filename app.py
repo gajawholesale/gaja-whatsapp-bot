@@ -351,32 +351,6 @@ app = Flask(__name__)
 def health():
     logger.info("Health check endpoint called")
     return "GAJA bot running (No Redis) ✓", 200
-@app.get("/selftest")
-@app.get("/selftest")
-@app.get("/debug")
-def debug():
-    """
-    Diagnostic endpoint to check:
-      - env vars (ACCESS_TOKEN, PHONE_ID)
-      - GET /<PHONE_ID>?fields=id,display_phone_number
-      - GET /me
-      - optionally GET /<WABA_ID>/phone_numbers if WABA_ID is set
-    Returns structured JSON with status codes and response bodies (or exception text).
-    """
-    env = {
-        "ACCESS_TOKEN_set": bool(ACCESS_TOKEN),
-        "PHONE_ID_set": bool(PHONE_ID),
-        "GRAPH": GRAPH,
-        "PHONE_ID_value_preview": (str(PHONE_ID)[:6] + "..." if PHONE_ID else None),
-        "HEADERS_preview": {
-            "Authorization": (HEADERS.get("Authorization")[:10] + "..." if HEADERS.get("Authorization") else None),
-            "Content-Type": HEADERS.get("Content-Type")
-        },
-        "GAJA_PHONE_preview": (GAJA_PHONE if GAJA_PHONE else None),
-    }
-
-    results = {"env": env, "checks": {}}
-
     # Helper to perform GETs and return structured info
     def safe_get(url, params=None, note=None):
         entry = {"url": url, "note": note}
