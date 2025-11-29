@@ -450,24 +450,83 @@ def debug():
 
     return results, 200
 
+@app.get("/selftest")
 def selftest():
-    env_ok = {
+    """
+    Diagnostic selftest:
+      - verifies env flags
+      - builds a simple text payload
+      - attempts to POST to the WhatsApp Cloud API
+      - returns structured JSON including any exception or response text
+    """
+    # Basic env preview (mask token)
+    env = {
         "ACCESS_TOKEN_set": bool(ACCESS_TOKEN),
         "PHONE_ID_set": bool(PHONE_ID),
         "GRAPH": GRAPH,
-        "HEADERS_preview": {"Authorization": HEADERS.get("Authorization")[:10] + "..." if HEADERS.get("Authorization") else "None"}
+        "PHONE_ID_value_preview": (str(PHONE_ID)[:8] + "..." if PHONE_ID else None),
+        "HEADERS_preview": {
+            "Authorization_preview": (HEADERS.get("Authorization")[:12] + "..." if HEADERS.get("Authorization") else None),
+            "Content-Type": HEADERS.get("Content-Type")
+        },
+        "GAJA_PHONE_preview": GAJA_PHONE
     }
+
+    # Quick fail if essential env missing
     if not ACCESS_TOKEN or not PHONE_ID:
-        logger.error("Selftest missing ACCESS_TOKEN or PHONE_ID")
-        return {"ok": False, "reason": "ACCESS_TOKEN or PHONE_ID not set", "env": env_ok}, 400
+        return {
+            "ok": False,
+            "reason": "ACCESS_TOKEN or PHONE_ID not set",
+            "env": env
+        }, 400
 
-    to = os.getenv("SELFTEST_PHONE", GAJA_PHONE)
-    msg = "GAJA selftest: outgoing POST from bot at " + datetime.utcnow().isoformat() + "Z"
-    payload = {"messaging_product":"whatsapp","to":to,"text":{"body":msg}}
-    result = _do_post(payload)
+    # Compose a harmless test message payload
+    to = os.getenv("SELFTEST_PHONE", GAJA_PHONE) or GAJA_PHONE
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    text_body = f"GAJA selftest at {timestamp}"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": str(to),
+        "text": {"body": text_body}
+    }
 
-    # result is a dict per the new _do_post
-    return {"ok": True, "env": env_ok, "post_result": result}, 200
+    # Prepare result container
+    post_result = {
+        "attempted_url": f"{GRAPH}/{PHONE_ID}/messages",
+        "payload_preview": payload,
+        "started_at": timestamp
+    }
+
+    # Do the POST and capture any exception or response
+    try:
+        url = f"{GRAPH}/{PHONE_ID}/messages"
+        logger.info("SELFTEST: posting test message to %s (to=%s)", url, to)
+        r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
+        post_result["ok"] = True
+        post_result["status_code"] = r.status_code
+        # include full response text (shorten if huge)
+        text = r.text or ""
+        post_result["text"] = text if len(text) < 8000 else text[:8000] + "...(truncated)"
+        # try to parse JSON safely
+        try:
+            post_result["json"] = r.json()
+        except Exception:
+            post_result["json"] = None
+        logger.info("SELFTEST POST -> %s", r.status_code)
+        logger.debug("SELFTEST Response body: %s", post_result["text"])
+    except Exception as e:
+        # Capture the exception details so you can paste them here
+        logger.exception("SELFTEST: exception when posting to WhatsApp API")
+        post_result["ok"] = False
+        post_result["exception"] = str(e)
+
+    # Return everything useful (masked token preview only)
+    return {
+        "ok": True,
+        "env": env,
+        "post_result": post_result
+    }, 200
+
 
 
 @app.get("/webhook")
