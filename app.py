@@ -424,7 +424,7 @@ def health():
 
     return results, 200
 
-@app.get("/selftest")
+@app.get("/selftest") 
 def selftest():
     """
     Selftest that WILL perform an outgoing POST and return the response.
