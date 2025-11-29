@@ -1,3 +1,4 @@
+# app.py - GAJA WhatsApp bot (full file)
 import os
 import sys
 import logging
@@ -15,7 +16,6 @@ logger = logging.getLogger(__name__)
 logger.info("=" * 50)
 logger.info("STARTING GAJA BOT")
 logger.info("=" * 50)
-
 
 try:
     import requests
@@ -80,7 +80,7 @@ def save_session(frm, s):
     with session_lock:
         memory_sessions[frm] = {
             'data': s,
-            'expires': time.time() + (120 if s["state"] in ("lang","main") else 300)
+            'expires': time.time() + (120 if s.get("state") in ("lang","main") else 300)
         }
 
 def sget(phone):
@@ -113,15 +113,14 @@ def already_processed(mid: str) -> bool:
         return False
 
 # ========= MESSAGING HELPERS =========
-# ---------- Improved send helpers ----------
-# ---------- Debuggable _do_post ----------
+# Unified _do_post returns a structured dict
 def _do_post(payload):
     url = f"{GRAPH}/{PHONE_ID}/messages"
     logger.debug("Outgoing POST url: %s", url)
-    logger.debug("Outgoing headers: %s", {k: HEADERS.get(k) for k in ('Authorization','Content-Type')})
-    logger.debug("Outgoing payload: %s", payload)
+    logger.debug("Outgoing headers preview: %s", {k: HEADERS.get(k) for k in ('Authorization','Content-Type')})
+    logger.debug("Outgoing payload preview: %s", payload)
     try:
-        r = requests.post(url, headers=HEADERS, json=payload, timeout=15)
+        r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
         logger.info("POST %s -> %s", url, r.status_code)
         try:
             logger.debug("Response body: %s", r.text)
@@ -129,19 +128,16 @@ def _do_post(payload):
             logger.debug("Could not decode response body")
         return {"ok": True, "status_code": r.status_code, "text": r.text}
     except Exception as e:
-        # Return structured error info (also logged)
         logger.exception("Error doing POST to WhatsApp API: %s", e)
         return {"ok": False, "exception": str(e)}
-# ---------- end _do_post ----------
-
 
 def send_text(to, body):
     payload = {"messaging_product":"whatsapp","to":to,"text":{"body":body}}
     r = _do_post(payload)
-    if r is None:
-        logger.error("send_text failed at network level for %s", to)
-    elif not r.ok:
-        logger.error("send_text returned non-OK: %s %s", r.status_code, r.text)
+    if not r.get("ok"):
+        logger.error("send_text failed for %s: %s", to, r.get("exception"))
+    elif r.get("status_code") and r["status_code"] >= 400:
+        logger.error("send_text returned non-OK: %s %s", r.get("status_code"), r.get("text"))
     else:
         logger.info("Text sent to %s OK", to)
 
@@ -171,10 +167,10 @@ def send_interactive_buttons(to, body_text, buttons):
         }
     }
     r = _do_post(payload)
-    if r is None:
-        logger.error("send_interactive_buttons failed at network level for %s", to)
-    elif not r.ok:
-        logger.error("send_interactive_buttons returned non-OK: %s %s", r.status_code, r.text)
+    if not r.get("ok"):
+        logger.error("send_interactive_buttons failed for %s: %s", to, r.get("exception"))
+    elif r.get("status_code") and r["status_code"] >= 400:
+        logger.error("send_interactive_buttons returned non-OK: %s %s", r.get("status_code"), r.get("text"))
     else:
         logger.info("Buttons sent to %s OK", to)
 
@@ -194,10 +190,10 @@ def send_interactive_list(to, body_text, button_text, sections):
         }
     }
     r = _do_post(payload)
-    if r is None:
-        logger.error("send_interactive_list failed at network level for %s", to)
-    elif not r.ok:
-        logger.error("send_interactive_list returned non-OK: %s %s", r.status_code, r.text)
+    if not r.get("ok"):
+        logger.error("send_interactive_list failed for %s: %s", to, r.get("exception"))
+    elif r.get("status_code") and r["status_code"] >= 400:
+        logger.error("send_interactive_list returned non-OK: %s %s", r.get("status_code"), r.get("text"))
     else:
         logger.info("List sent to %s OK", to)
 
@@ -205,8 +201,10 @@ def send_image(to, url, caption=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"image","image":{"link":url}}
     if caption: payload["image"]["caption"] = caption
     r = _do_post(payload)
-    if r is None or not r.ok:
-        logger.error("send_image error: %s", getattr(r, "text", None))
+    if not r.get("ok"):
+        logger.error("send_image failed for %s: %s", to, r.get("exception"))
+    elif r.get("status_code") and r["status_code"] >= 400:
+        logger.error("send_image returned non-OK: %s %s", r.get("status_code"), r.get("text"))
     else:
         logger.info("Image sent to %s OK", to)
 
@@ -216,13 +214,14 @@ def send_document(to, link, caption=None, filename=None):
     payload = {"messaging_product":"whatsapp","to":to,"type":"document","document":doc}
     if caption: payload["document"]["caption"] = caption
     r = _do_post(payload)
-    if r is None or not r.ok:
-        logger.error("send_document error: %s", getattr(r, "text", None))
+    if not r.get("ok"):
+        logger.error("send_document failed for %s: %s", to, r.get("exception"))
+    elif r.get("status_code") and r["status_code"] >= 400:
+        logger.error("send_document returned non-OK: %s %s", r.get("status_code"), r.get("text"))
     else:
         logger.info("Document sent to %s OK", to)
-# ---------- end helpers ----------
 
-
+# ========= misc helpers =========
 def log_pumble(msg: str):
     if not PUMBLE_WEBHOOK: return
     try:
@@ -349,87 +348,47 @@ def fetch_cashback(code, month):
 logger.info("Initializing Flask app...")
 app = Flask(__name__)
 
+# ---------- Routes ----------
 @app.get("/")
 def health():
     logger.info("Health check endpoint called")
     return "GAJA bot running (No Redis) ✓", 200
-    # Helper to perform GETs and return structured info
-    def safe_get(url, params=None, note=None):
-        entry = {"url": url, "note": note}
+
+@app.get("/debug")
+def debug():
+    env = {"ACCESS_TOKEN_set": bool(ACCESS_TOKEN), "PHONE_ID_set": bool(PHONE_ID)}
+    results = {"env": env, "checks": {}}
+
+    def safe_get(url, params=None):
+        entry = {"url": url}
         try:
             r = requests.get(url, headers=HEADERS, params=params, timeout=12)
-            entry["ok"] = True
-            entry["status_code"] = r.status_code
-            # limit response logging length so logs don't blow up
-            text = r.text or ""
-            entry["text_preview"] = text if len(text) < 4000 else text[:4000] + "...(truncated)"
+            entry.update({"ok": True, "status_code": r.status_code, "text_preview": (r.text[:1000] if r.text else "")})
             logger.info("DEBUG GET %s -> %s", url, r.status_code)
-            logger.debug("DEBUG body: %s", entry["text_preview"])
         except Exception as e:
-            entry["ok"] = False
-            entry["exception"] = str(e)
+            entry.update({"ok": False, "exception": str(e)})
             logger.exception("DEBUG GET failed for %s : %s", url, e)
         return entry
 
-    # 1) Check PHONE_ID object
     if PHONE_ID:
-        url_phone = f"{GRAPH}/{PHONE_ID}"
-        params = {"fields": "id,display_phone_number"}
-        results["checks"]["phone_id_get"] = safe_get(url_phone, params=params, note="Check that PHONE_ID exists and is readable")
+        results["checks"]["phone_id_get"] = safe_get(f"{GRAPH}/{PHONE_ID}", params={"fields":"id,display_phone_number"})
     else:
         results["checks"]["phone_id_get"] = {"ok": False, "reason": "PHONE_ID not set"}
 
-    # 2) Check /me for token validity
-    url_me = f"{GRAPH}/me"
-    results["checks"]["me_get"] = safe_get(url_me, note="Check token validity and which app/account it belongs to")
-
-    # 3) If you have a WABA_ID env var, try to list phone_numbers for that WABA
+    results["checks"]["me_get"] = safe_get(f"{GRAPH}/me")
+    # optional: WABA listing if you set WABA_ID
     WABA_ID = os.getenv("WABA_ID", "")
     if WABA_ID:
-        url_waba = f"{GRAPH}/{WABA_ID}/phone_numbers"
-        results["checks"]["waba_phone_numbers"] = safe_get(url_waba, note="List phone numbers for WABA_ID")
+        results["checks"]["waba_phone_numbers"] = safe_get(f"{GRAPH}/{WABA_ID}/phone_numbers")
         results["env"]["WABA_ID_preview"] = (WABA_ID[:8] + "..." if WABA_ID else None)
     else:
         results["checks"]["waba_phone_numbers"] = {"ok": False, "reason": "WABA_ID not set (optional)"}
-
-    # 4) Quick connectivity check to Graph root
-    try:
-        r_root = requests.get(GRAPH, headers=HEADERS, timeout=8)
-        results["checks"]["graph_root"] = {"ok": True, "status_code": r_root.status_code, "text_preview": (r_root.text[:300] + "..." if r_root.text else "")}
-    except Exception as e:
-        results["checks"]["graph_root"] = {"ok": False, "exception": str(e)}
-        logger.exception("DEBUG graph root connectivity failed: %s", e)
-
-    # 5) Advice summary (basic)
-    advice = []
-    ph = results["checks"].get("phone_id_get", {})
-    me = results["checks"].get("me_get", {})
-
-    if not env["ACCESS_TOKEN_set"]:
-        advice.append("ACCESS_TOKEN is not set. Set a valid token in environment.")
-    if not env["PHONE_ID_set"]:
-        advice.append("PHONE_ID is not set. Set the proper Phone Number ID from WhatsApp Manager.")
-    if ph.get("ok") is True and ph.get("status_code") == 200:
-        advice.append("PHONE_ID exists and is reachable with this token.")
-    else:
-        if ph.get("ok") is False and "exception" in ph:
-            advice.append("Network/connection error when contacting Graph for PHONE_ID (see exception).")
-        else:
-            advice.append("PHONE_ID lookup returned non-200; either PHONE_ID is wrong or token lacks permission.")
-
-    if me.get("ok") is True and me.get("status_code") == 200:
-        advice.append("Access token appears valid (GET /me succeeded).")
-    else:
-        advice.append("GET /me failed: token may be invalid or expired, or permissions are missing.")
-
-    results["advice_summary"] = advice
-
     return results, 200
 
-@app.get("/selftest") 
+@app.get("/selftest")
 def selftest():
     """
-    Selftest that WILL perform an outgoing POST and return the response.
+    This WILL perform an outgoing POST and return the response.
     """
     env = {"ACCESS_TOKEN_set": bool(ACCESS_TOKEN), "PHONE_ID_set": bool(PHONE_ID)}
     if not ACCESS_TOKEN or not PHONE_ID:
@@ -437,29 +396,19 @@ def selftest():
 
     url = f"{GRAPH}/{PHONE_ID}/messages"
     to = os.getenv("SELFTEST_PHONE", GAJA_PHONE)
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": str(to),
-        "text": {"body": "GAJA selftest at " + datetime.utcnow().isoformat() + "Z"}
-    }
+    payload = {"messaging_product": "whatsapp", "to": str(to),
+               "text": {"body": "GAJA selftest at " + datetime.utcnow().isoformat() + "Z"}}
 
     logger.info("SELFTEST: posting test message to %s (to=%s)", url, to)
     try:
         r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
         logger.info("SELFTEST POST -> %s", r.status_code)
         logger.info("SELFTEST Response body: %s", r.text)
-        # return concise structured output
-        return {
-            "ok": True,
-            "post_result": {
-                "status_code": r.status_code,
-                "text": r.text,
-                "json": (r.json() if r.text else None)
-            }
-        }, 200
+        return {"ok": True, "post_result": {"status_code": r.status_code, "text": r.text, "json": (r.json() if r.text else None)}}, 200
     except Exception as e:
         logger.exception("SELFTEST exception")
         return {"ok": False, "post_result": {"exception": str(e)}}, 500
+# ---------- end routes ----------
 
 @app.get("/webhook")
 def verify():
