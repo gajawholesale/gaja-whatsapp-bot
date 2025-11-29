@@ -451,22 +451,36 @@ def debug():
     return results, 200
 
 @app.get("/selftest")
-@app.get("/selftest")
 def selftest():
+    """
+    Selftest that WILL perform an outgoing POST and return the response.
+    """
     env = {"ACCESS_TOKEN_set": bool(ACCESS_TOKEN), "PHONE_ID_set": bool(PHONE_ID)}
     if not ACCESS_TOKEN or not PHONE_ID:
         return {"ok": False, "reason": "missing env", "env": env}, 400
 
     url = f"{GRAPH}/{PHONE_ID}/messages"
     to = os.getenv("SELFTEST_PHONE", GAJA_PHONE)
-    payload = {"messaging_product":"whatsapp","to":str(to),"text":{"body":"GAJA selftest at "+datetime.utcnow().isoformat()+"Z"}}
-    logger.info("SELFTEST: posting test message to %s (to=%s)", url, to)
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": str(to),
+        "text": {"body": "GAJA selftest at " + datetime.utcnow().isoformat() + "Z"}
+    }
 
+    logger.info("SELFTEST: posting test message to %s (to=%s)", url, to)
     try:
         r = requests.post(url, headers=HEADERS, json=payload, timeout=20)
         logger.info("SELFTEST POST -> %s", r.status_code)
         logger.info("SELFTEST Response body: %s", r.text)
-        return {"ok": True, "post_result": {"status_code": r.status_code, "text": r.text, "json": (r.json() if r.text else None)}}, 200
+        # return concise structured output
+        return {
+            "ok": True,
+            "post_result": {
+                "status_code": r.status_code,
+                "text": r.text,
+                "json": (r.json() if r.text else None)
+            }
+        }, 200
     except Exception as e:
         logger.exception("SELFTEST exception")
         return {"ok": False, "post_result": {"exception": str(e)}}, 500
