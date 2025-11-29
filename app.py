@@ -2,6 +2,8 @@ import os
 import sys
 import logging
 
+print("🚨 NEW BUILD LOADED 🚨")
+
 # Setup logging FIRST
 logging.basicConfig(
     level=logging.DEBUG,
