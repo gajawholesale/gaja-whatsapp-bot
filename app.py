@@ -421,162 +421,130 @@ def verify():
 def incoming():
     logger.info("Webhook POST received")
     data = request.get_json(silent=True) or {}
-    
+
+    # Very verbose debug log of the payload (trimmed in logs if very large)
     try:
-        msg = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        logger.info(f"Message from: {msg.get('from')}, type: {msg.get('type')}")
+        logger.debug("Raw webhook payload: %s", json.dumps(data, ensure_ascii=False)[:4000])
+    except Exception:
+        logger.debug("Raw webhook payload (could not json.dumps)")
+
+    # Try to locate a user message inside the usual nested structure:
+    # entry -> changes -> value -> messages (array)
+    msg = None
+    frm = None
+    mid = None
+    msg_type = None
+
+    try:
+        entries = data.get("entry", []) if isinstance(data, dict) else []
+        for entry in entries:
+            changes = entry.get("changes", []) or []
+            for change in changes:
+                value = change.get("value", {}) or {}
+                # If this change contains 'messages' (incoming message) use it
+                if "messages" in value and isinstance(value["messages"], list) and value["messages"]:
+                    msg = value["messages"][0]
+                    # the sender phone is usually in msg['from'] or in value['metadata']['phone_number_id'] etc.
+                    frm = msg.get("from") or value.get("metadata", {}).get("phone_number") or value.get("contacts", [{}])[0].get("wa_id")
+                    mid = msg.get("id")
+                    msg_type = msg.get("type")
+                    # keep a reference to the entire 'value' for helper use later
+                    change_value = value
+                    break
+                # Sometimes the update is a 'statuses' update (message delivery/read statuses)
+                if "statuses" in value:
+                    logger.info("Webhook contains status update (not a user message): %s", value.get("statuses"))
+                    # we don't process delivery status here — just log and return 200
+                    return "ok", 200
+                # Other change types: contacts, etc.
+                if "contacts" in value:
+                    logger.info("Webhook contains contacts information: %s", value.get("contacts"))
+                    # not a user chat to reply to
+                    return "ok", 200
+            if msg:
+                break
+
+        if not msg:
+            # Nothing we can act on; it's not an incoming user message
+            logger.error("Error parsing message: 'messages' not found in payload or messages empty")
+            return "ok", 200
+
     except Exception as e:
-        logger.error(f"Error parsing message: {e}")
+        logger.exception("Exception while parsing webhook payload: %s", e)
         return "ok", 200
 
-    mid = msg.get("id")
+    # Dedup and session logic (same as before)
     if already_processed(mid):
-        logger.info(f"Message {mid} already processed")
+        logger.info("Message %s already processed", mid)
         return "ok", 200
-    
-    frm = msg["from"]
+
+    # Ensure we have a 'from' value
+    if not frm:
+        logger.error("Could not determine sender (from) for message id %s", mid)
+        return "ok", 200
+
     s = sget(frm)
-    
-    logger.info(f"Current state for {frm}: {s['state']}, lang: {s['lang']}")
-    
-    # ===== TEMP DEBUG AUTO-REPLY (inserted inside incoming) =====
+
+    logger.info("Message from: %s, type: %s, id: %s", frm, msg_type, mid)
+    logger.info(f"Current state for {frm}: {s.get('state')}, lang: {s.get('lang')}")
+
+    # Handle interactive button/list replies if appropriate
     try:
-        logger.info("DEBUG: incoming text body: %r", msg.get("text", {}).get("body"))
-        logger.info("DEBUG: current session state: %s", s.get("state"))
-        # Force an immediate auto-reply (temporary)
-        logger.info("DEBUG: sending forced auto-reply to %s", frm)
-        send_text(frm, "🛠️ Debug auto-reply: GajaBot received your message. This is a forced reply.")
-        logger.info("DEBUG: forced auto-reply sent (attempted).")
+        if msg_type == "interactive":
+            interactive = msg.get("interactive", {})
+            if interactive.get("type") == "button_reply":
+                button_id = interactive.get("button_reply", {}).get("id", "")
+                logger.info("Button clicked: %s", button_id)
+                return handle_button_click(frm, s, button_id)
+            elif interactive.get("type") == "list_reply":
+                list_id = interactive.get("list_reply", {}).get("id", "")
+                logger.info("List item selected: %s", list_id)
+                return handle_list_click(frm, s, list_id)
+
+        # If message is text
+        if msg_type == "text":
+            text = (msg.get("text", {}).get("body") or "").strip()
+            if not text:
+                return "ok", 200
+
+            logger.info("Text received: '%s' in state: %s", text, s.get("state"))
+
+            # EXIT command
+            if text.upper() in ("EXIT", "STOP"):
+                logger.info("EXIT command from %s", frm)
+                with session_lock:
+                    if frm in memory_sessions:
+                        del memory_sessions[frm]
+                send_text(frm, "✅ Session ended. Send any message to start again.")
+                return "ok", 200
+
+            # Menu shortcut
+            if text == "9":
+                s["state"] = "lang"
+                ask_language(frm)
+                save_session(frm, s)
+                return "ok", 200
+
+            # Carpenter code input
+            if s.get("state") == "cb_code":
+                return handle_carpenter_code_input(frm, s, text)
+
+            # If we get here and user is in lang state, send language selection
+            if s.get("state") == "lang":
+                ask_language(frm)
+                save_session(frm, s)
+                return "ok", 200
+
+            # Add other text-handling logic here (if any)
+            # For now respond with main menu if in main
+            return "ok", 200
+
+        # Non-text message types (image, audio, etc.) — log and optionally reply
+        logger.info("Received non-text message type '%s' from %s; ignoring for now.", msg_type, frm)
+        return "ok", 200
+
     except Exception as e:
-        logger.exception("DEBUG: auto-reply exception: %s", e)
-    # ===== END DEBUG BLOCK =====
-
-    # ALWAYS send language selection for new users or those in lang state
-    if s["state"] == "lang" and msg.get("type") == "text":
-        logger.info("New user detected, sending language selection")
-        ask_language(frm)
-        save_session(frm, s)
-        return "ok", 200
-    
-    # Handle interactive button/list replies
-    if msg.get("type") == "interactive":
-        interactive = msg.get("interactive", {})
-        
-        if interactive.get("type") == "button_reply":
-            button_id = interactive.get("button_reply", {}).get("id", "")
-            logger.info(f"Button clicked: {button_id}")
-            return handle_button_click(frm, s, button_id)
-        
-        elif interactive.get("type") == "list_reply":
-            list_id = interactive.get("list_reply", {}).get("id", "")
-            logger.info(f"List item selected: {list_id}")
-            return handle_list_click(frm, s, list_id)
-    
-    # Handle regular text messages
-    elif msg.get("type") == "text":
-        text = (msg.get("text", {}).get("body") or "").strip()
-        if not text: return "ok", 200
-        
-        logger.info(f"Text received: '{text}' in state: {s['state']}")
-        
-        # EXIT command
-        if text.upper() in ("EXIT", "STOP"):
-            logger.info(f"EXIT command from {frm}")
-            with session_lock:
-                if frm in memory_sessions:
-                    del memory_sessions[frm]
-            send_text(frm, "✅ Session ended. Send any message to start again.")
-            return "ok", 200
-        
-        # Menu shortcut
-        if text == "9":
-            s["state"] = "lang"
-            ask_language(frm)
-            save_session(frm, s)
-            return "ok", 200
-        
-        # Handle carpenter code input
-        if s["state"] == "cb_code":
-            return handle_carpenter_code_input(frm, s, text)
-    
-    return "ok", 200
-
-def handle_button_click(frm, s, button_id):
-    logger.info(f"Processing button: {button_id}")
-    
-    if button_id == "lang_en":
-        s["lang"] = "en"
-        s["state"] = "main"
-        main_menu(frm, s["lang"])
-        save_session(frm, s)
-        return "ok", 200
-    
-    elif button_id == "lang_ta":
-        s["lang"] = "ta"
-        s["state"] = "main"
-        main_menu(frm, s["lang"])
-        save_session(frm, s)
-        return "ok", 200
-    
-    elif button_id == "main_customer":
-        s["state"] = "cust"
-        customer_menu(frm, s["lang"])
-        save_session(frm, s)
-        return "ok", 200
-    
-    elif button_id == "main_carpenter":
-        s["state"] = "carp"
-        carpenter_menu(frm, s["lang"])
-        save_session(frm, s)
-        return "ok", 200
-    
-    elif button_id == "main_talk":
-        msg = f"✅ A team member will contact you soon.\n📞 Or call us: {GAJA_PHONE}" if s["lang"]=="en" else f"✅ எங்கள் குழு உறுப்பினர் விரைவில் தொடர்பு கொள்வார்.\n📞 அல்லது எங்களை அழையுங்கள்: {GAJA_PHONE}"
-        send_text(frm, msg)
-        log_pumble(f"📞 Customer {frm} requested to talk to team")
-        s["state"] = "main"
-        save_session(frm, s)
-        return "ok", 200
-    
-    elif button_id == "cust_catalog":
-        if CATALOG_URL:
-            send_document(frm, CATALOG_URL, "📖 GAJA Catalogue", CATALOG_FILENAME)
-            log_pumble(f"📂 Catalogue sent to {frm}")
-        else:
-            send_text(frm, "Catalogue not available." if s["lang"]=="en" else "கையேடு கிடைக்கவில்லை.")
-        return "ok", 200
-    
-    elif button_id == "cust_back":
-        s["state"] = "main"
-        main_menu(frm, s["lang"])
-        save_session(frm, s)
-        return "ok", 200
-    
-    elif button_id == "carp_register":
-        msg = ("Please share your contact details:\n\n📱 Phone Number\n👤 Full Name\n📍 Location\n\nOur team will contact you for registration." 
-               if s["lang"]=="en" else 
-               "உங்கள் தொடர்பு விவரங்களைப் பகிரவும்:\n\n📱 தொலைபேசி எண்\n👤 முழு பெயர்\n📍 இடம்\n\nபதிவுக்கு எங்கள் குழு உங்களைத் தொடர்பு கொள்ளும்.")
-        send_text(frm, msg)
-        log_pumble(f"📝 Carpenter registration request from {frm}")
-        return "ok", 200
-    
-    elif button_id == "carp_scheme":
-        if SCHEME_IMAGES:
-            for i, url in enumerate(SCHEME_IMAGES, 1):
-                send_image(frm, url, f"🛠️ GAJA Scheme {i}/{len(SCHEME_IMAGES)}")
-        else:
-            send_text(frm, "Scheme info not available." if s["lang"]=="en" else "ஸ்கீம் தகவல் கிடைக்கவில்லை.")
-        return "ok", 200
-    
-    elif button_id == "carp_cashback":
-        s["state"] = "cb_code"
-        ask_code(frm, s["lang"])
-        save_session(frm, s)
-        return "ok", 200
-    
-    else:
-        logger.warning(f"Unknown button: {button_id}")
-        invalid(frm, s["lang"])
+        logger.exception("Unhandled exception processing message: %s", e)
         return "ok", 200
 
 def handle_list_click(frm, s, list_id):
