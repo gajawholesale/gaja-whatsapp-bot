@@ -439,6 +439,18 @@ def incoming():
     
     logger.info(f"Current state for {frm}: {s['state']}, lang: {s['lang']}")
     
+    # ===== TEMP DEBUG AUTO-REPLY (inserted inside incoming) =====
+    try:
+        logger.info("DEBUG: incoming text body: %r", msg.get("text", {}).get("body"))
+        logger.info("DEBUG: current session state: %s", s.get("state"))
+        # Force an immediate auto-reply (temporary)
+        logger.info("DEBUG: sending forced auto-reply to %s", frm)
+        send_text(frm, "🛠️ Debug auto-reply: GajaBot received your message. This is a forced reply.")
+        logger.info("DEBUG: forced auto-reply sent (attempted).")
+    except Exception as e:
+        logger.exception("DEBUG: auto-reply exception: %s", e)
+    # ===== END DEBUG BLOCK =====
+
     # ALWAYS send language selection for new users or those in lang state
     if s["state"] == "lang" and msg.get("type") == "text":
         logger.info("New user detected, sending language selection")
@@ -488,18 +500,6 @@ def incoming():
             return handle_carpenter_code_input(frm, s, text)
     
     return "ok", 200
-
-# ===== TEMP DEBUG AUTO-REPLY (paste here) =====
-try:
-    logger.info("DEBUG: incoming text body: %r", msg.get("text", {}).get("body"))
-    logger.info("DEBUG: current session state: %s", s.get("state"))
-    # Force an immediate auto-reply (temporary)
-    logger.info("DEBUG: sending forced auto-reply to %s", frm)
-    send_text(frm, "🛠️ Debug auto-reply: GajaBot received your message. This is a forced reply.")
-    logger.info("DEBUG: forced auto-reply sent (attempted).")
-except Exception as e:
-    logger.exception("DEBUG: auto-reply exception: %s", e)
-# ===== END DEBUG BLOCK =====
 
 def handle_button_click(frm, s, button_id):
     logger.info(f"Processing button: {button_id}")
