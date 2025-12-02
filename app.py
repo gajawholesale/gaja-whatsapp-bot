@@ -1,4 +1,4 @@
-# app.py - GAJA WhatsApp Bot - FINAL VERSION (December 2025)
+# app.py - GAJA WhatsApp Bot - FINAL POLISHED VERSION (Dec 2025)
 import os
 import sys
 import logging
@@ -6,13 +6,12 @@ import json
 import time
 import requests
 from threading import Lock
-from datetime import datetime
 from flask import Flask, request
 
-print("GAJA BOT - FINAL BUILD LOADED")
+print("GAJA BOT - FINAL POLISHED BUILD")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger(__name__)
-logger.info("GAJA BOT STARTING - FULL CASHBACK FLOW INCLUDED")
+logger.info("GAJA BOT STARTING - NO DUPLICATES + BACK TO MENU")
 
 # ==================== CONFIG ====================
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
@@ -24,7 +23,6 @@ GAJA_PHONE = os.getenv("GAJA_PHONE", "91444XXXXXX")
 CATALOG_URL = os.getenv("CATALOG_URL", "")
 CATALOG_FILENAME = os.getenv("CATALOG_FILENAME", "GAJA-Catalogue.pdf")
 PUMBLE_WEBHOOK = os.getenv("PUMBLE_WEBHOOK_URL", "")
-
 SCHEME_IMAGES = [os.getenv(k) for k in ["SCHEME_IMG1","SCHEME_IMG2","SCHEME_IMG3","SCHEME_IMG4","SCHEME_IMG5"] if os.getenv(k)]
 
 GRAPH = "https://graph.facebook.com/v20.0"
@@ -37,7 +35,7 @@ lock = Lock()
 
 def save_session(phone, data):
     with lock:
-        sessions[phone] = {"data": data, "expires": time.time() + 900}
+        sessions[phone] = {"data": data, "expires": time.time() + 1800}
 
 def get_session(phone):
     with lock:
@@ -46,11 +44,17 @@ def get_session(phone):
         return {"lang": "en", "state": "start"}
 
 def already_seen(msg_id):
-    if not msg_id: return False
+    if not msg_id:
+        return False
     with lock:
+        now = time.time()
+        # Auto cleanup old entries
+        global messages_seen
+        messages_seen = {k: v for k, v in messages_seen.items() if now - v < 600}
         if msg_id in messages_seen:
+            logger.info(f"DUPLICATE IGNORED: {msg_id}")
             return True
-        messages_seen[msg_id] = True
+        messages_seen[msg_id] = now
         return False
 
 # ==================== SEND HELPERS ====================
@@ -122,7 +126,7 @@ def fetch_cashback(code, month):
 
 def ask_carpenter_code(to, lang):
     msg = "Please enter your Carpenter Code (e.g. ABC123)" if lang == "en" else "உங்கள் கார்பென்டர் கோடை உள்ளிடவும் (எ.கா. ABC123)"
-    send_text(to, msg)
+    send_text(to, msg + "\n\nType 0 to go back")
 
 def handle_carpenter_code(to, session, raw_code):
     code = raw_code.strip().upper()
@@ -139,10 +143,9 @@ def handle_carpenter_code(to, session, raw_code):
     session["state"] = "awaiting_month"
     save_session(to, session)
 
-    title = f"Code: {code}\nSelect month for cashback:" if session["lang"]=="en" else f"கோடு: {code}\nகேஷ்பேக்கை பார்க்க மாதம் தேர்வு செய்க:"
+    title = f"Code: {code}\nSelect month:" if session["lang"]=="en" else f"கோடு: {code}\nமாதம் தேர்வு:"
     button = "Choose Month" if session["lang"]=="en" else "மாதம் தேர்வு"
-
-    rows = [{"id": f"month_{i}", "title": m, "description": "Tap to check" if session["lang"]=="en" else "சரிபார்க்க தட்டுக"} for i, m in enumerate(months)]
+    rows = [{"id": f"month_{i}", "title": m, "description": "Tap to check"} for i, m in enumerate(months)]
     send_list(to, title, button, rows)
 
 def handle_month_selection(to, session, list_id):
@@ -170,9 +173,9 @@ def handle_month_selection(to, session, list_id):
 
     session.pop("months", None)
     session.pop("carpenter_code", None)
-    session["state"] = "carp"
+    session["state"] = "main"
     save_session(to, session)
-    carpenter_menu(to, session["lang"])
+    main_menu(to, session["lang"])
 
 # ==================== MENUS ====================
 def ask_language(to):
@@ -182,50 +185,32 @@ def ask_language(to):
     ])
 
 def main_menu(to, lang):
-    if lang == "ta":
-        send_buttons(to, "வணக்கம்! எப்படி உதவலாம்?", [
-            {"id": "main_customer", "title": "வாடிக்கையாளர்"},
-            {"id": "main_carpenter", "title": "கார்பென்டர்"},
-            {"id": "main_talk", "title": "பேச வேண்டுமா?"}
-        ])
-    else:
-        send_buttons(to, "Welcome! How can we help?", [
-            {"id": "main_customer", "title": "Customer"},
-            {"id": "main_carpenter", "title": "Carpenter"},
-            {"id": "main_talk", "title": "Talk to Us"}
-        ])
+    body = "Welcome! How can we help you today?" if lang == "en" else "வணக்கம்! எப்படி உதவலாம்?"
+    send_buttons(to, body, [
+        {"id": "main_customer", "title": "Customer" if lang=="en" else "வாடிக்கையாளர்"},
+        {"id": "main_carpenter", "title": "Carpenter" if lang=="en" else "கார்பென்டர்"},
+        {"id": "main_talk", "title": "Talk to Us" if lang=="en" else "பேச வேண்டுமா?"}
+    ])
 
 def customer_menu(to, lang):
-    if lang == "ta":
-        send_buttons(to, "வாடிக்கையாளர் மெனு", [
-            {"id": "cust_catalog", "title": "கேட்டலாக்"},
-            {"id": "cust_back", "title": "பின் செல்ல"}
-        ])
-    else:
-        send_buttons(to, "Customer Menu", [
-            {"id": "cust_catalog", "title": "View Catalogue"},
-            {"id": "cust_back", "title": "Back"}
-        ])
+    send_buttons(to, "Customer Menu" if lang=="en" else "வாடிக்கையாளர் மெனு", [
+        {"id": "cust_catalog", "title": "View Catalogue" if lang=="en" else "கேட்டலாக் பார்க்க"},
+        {"id": "back_to_main", "title": "Back to Main" if lang=="en" else "முகப்புக்கு"}
+    ])
 
 def carpenter_menu(to, lang):
-    if lang == "ta":
-        send_buttons(to, "கார்பென்டர் மெனு", [
-            {"id": "carp_register", "title": "பதிவு"},
-            {"id": "carp_scheme", "title": "ஸ்கீம்"},
-            {"id": "carp_cashback", "title": "கேஷ்பேக்"}
-        ])
-    else:
-        send_buttons(to, "Carpenter Menu", [
-            {"id": "carp_register", "title": "Register"},
-            {"id": "carp_scheme", "title": "Scheme Info"},
-            {"id": "carp_cashback", "title": "Check Cashback"}
-        ])
+    footer = "\n\nType 0 or 'menu' anytime to go back" if lang=="en" else "\n\nஎப்போது வேண்டுமானாலும் 0 அல்லது 'menu' என தட்டச்சு செய்து முகப்புக்கு செல்லலாம்"
+    send_buttons(to, ("Carpenter Menu" if lang=="en" else "கார்பென்டர் மெனு") + footer, [
+        {"id": "carp_register", "title": "Register" if lang=="en" else "பதிவு"},
+        {"id": "carp_scheme", "title": "Scheme Info" if lang=="en" else "ஸ்கீம்"},
+        {"id": "carp_cashback", "title": "Check Cashback" if lang=="en" else "கேஷ்பேக்"}
+    ])
 
 # ==================== FLASK APP ====================
 app = Flask(__name__)
 
 @app.get("/")
-def home(): return "GAJA BOT LIVE - FULL CASHBACK WORKING", 200
+def home(): return "GAJA BOT LIVE - NO DUPLICATES + BACK MENU", 200
 
 @app.get("/webhook")
 def verify():
@@ -236,13 +221,21 @@ def verify():
 @app.post("/webhook")
 def webhook():
     data = request.get_json() or {}
+    
+    # Early duplicate detection
+    msg_id = None
+    try:
+        msg_id = data.get("entry", [{}])[0].get("changes", [{}])[0].get("value", {}).get("messages", [{}])[0].get("id")
+    except: pass
+    if msg_id and already_seen(msg_id):
+        return "ok", 200
+
     for entry in data.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
             if "messages" not in value: continue
             msg = value["messages"][0]
             frm = msg["from"]
-            if already_seen(msg["id"]): return "ok", 200
 
             s = get_session(frm)
             logger.info(f"FROM {frm} | TYPE {msg['type']} | STATE {s['state']} | LANG {s['lang']}")
@@ -258,12 +251,12 @@ def webhook():
                     main_menu(frm, s["lang"])
 
                 elif btn == "main_customer":
-                    s["state"] = "cust"
+                    s["state"] = "main"
                     save_session(frm, s)
                     customer_menu(frm, s["lang"])
 
                 elif btn == "main_carpenter":
-                    s["state"] = "carp"
+                    s["state"] = "main"
                     save_session(frm, s)
                     carpenter_menu(frm, s["lang"])
 
@@ -275,7 +268,7 @@ def webhook():
                     send_document(frm, CATALOG_URL, caption="Latest GAJA Catalogue", filename=CATALOG_FILENAME)
                     customer_menu(frm, s["lang"])
 
-                elif btn == "cust_back":
+                elif btn in ["back_to_main", "cust_back"]:
                     s["state"] = "main"
                     save_session(frm, s)
                     main_menu(frm, s["lang"])
@@ -303,17 +296,21 @@ def webhook():
             if msg["type"] == "text":
                 text = msg["text"]["body"].strip().lower()
 
-                if text in ["hi","hello","start","menu","9","test"] or s["state"] == "start":
-                    s = {"lang": "en", "state": "start"}
+                if text in ["0", "menu", "back", "main", "home", "hi", "hello", "start"]:
+                    s["state"] = "main"
                     save_session(frm, s)
-                    ask_language(frm)
+                    if text in ["hi", "hello", "start"]:
+                        ask_language(frm)
+                    else:
+                        main_menu(frm, s["lang"])
+                    return "ok", 200
 
-                elif s["state"] == "awaiting_code":
+                if s["state"] == "awaiting_code":
                     handle_carpenter_code(frm, s, msg["text"]["body"])
+                    return "ok", 200
 
-                else:
-                    main_menu(frm, s["lang"])
-
+                # Default fallback
+                main_menu(frm, s["lang"])
                 return "ok", 200
 
     return "ok", 200
