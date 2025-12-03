@@ -366,6 +366,26 @@ def webhook():
             if msg["type"] == "text":
                 text = msg["text"]["body"].strip().lower()
 
+                # Force end session commands
+                if text in ["exit", "close", "quit", "bye", "stop"]:
+                    # Clear session completely
+                    with lock:
+                        if frm in sessions:
+                            del sessions[frm]
+                    goodbye = (
+                        "👋 Session ended. Thank you for contacting GAJA!\n\n"
+                        "Type 'hi' anytime to restart."
+                    ) if s.get("lang") == "en" else (
+                        "👋 உரையாடல் முடிந்தது. GAJA-வை தொடர்பு கொண்டதற்கு நன்றி!\n\n"
+                        "மீண்டும் தொடங்க 'hi' என தட்டச்சு செய்யவும்."
+                    ) if s.get("lang") == "ta" else (
+                        "👋 Session ended. Thank you!\n\n"
+                        "Type 'hi' to restart."
+                    )
+                    send_text(frm, goodbye)
+                    logger.info(f"SESSION ENDED by user: {frm}")
+                    return "ok", 200
+
                 # Reset commands
                 if text in ["0", "menu", "back", "main", "home"]:
                     s["state"] = "main"
