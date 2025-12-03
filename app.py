@@ -1,4 +1,4 @@
-# app.py - GAJA WhatsApp Bot - ENHANCED VERSION (Dec 2025)
+# app.py - GAJA WhatsApp Bot - FIXED FLOW VERSION (Dec 2025)
 import os
 import sys
 import logging
@@ -8,10 +8,10 @@ import requests
 from threading import Lock
 from flask import Flask, request
 
-print("GAJA BOT - ENHANCED BUILD")
+print("GAJA BOT - FIXED FLOW BUILD")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger(__name__)
-logger.info("GAJA BOT STARTING - ENHANCED WITH FIXES")
+logger.info("GAJA BOT STARTING - FIXED LANGUAGE FLOW + 3MIN TIMEOUT")
 
 # ==================== CONFIG ====================
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
@@ -29,6 +29,8 @@ SCHEME_IMAGES = [os.getenv(k) for k in ["SCHEME_IMG1","SCHEME_IMG2","SCHEME_IMG3
 GRAPH = "https://graph.facebook.com/v20.0"
 HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
 
+SESSION_TIMEOUT = 180  # 3 minutes
+
 # ==================== STORAGE ====================
 sessions = {}
 messages_seen = {}
@@ -36,13 +38,14 @@ lock = Lock()
 
 def save_session(phone, data):
     with lock:
-        sessions[phone] = {"data": data, "expires": time.time() + 1800}
+        sessions[phone] = {"data": data, "expires": time.time() + SESSION_TIMEOUT}
 
 def get_session(phone):
     with lock:
         if phone in sessions and sessions[phone]["expires"] > time.time():
             return sessions[phone]["data"]
-        return {"lang": "en", "state": "start"}
+        # Session expired or doesn't exist - return fresh state
+        return {"lang": None, "state": "start"}
 
 def already_seen(msg_id):
     if not msg_id:
@@ -58,19 +61,13 @@ def already_seen(msg_id):
         messages_seen[msg_id] = now
         return False
 
-def mask_phone(phone):
-    """Mask phone number for privacy in logs"""
-    return f"****{phone[-4:]}" if len(phone) > 4 else "****"
-
 # ==================== SEND HELPERS ====================
 def send(payload):
     url = f"{GRAPH}/{PHONE_ID}/messages"
     try:
-        # Mask phone in logs
-        to_masked = mask_phone(payload.get('to', ''))
         r = requests.post(url, headers=HEADERS, json=payload, timeout=15)
         if r.status_code == 200:
-            logger.info(f"SENT to {to_masked} | {payload.get('type','text')}")
+            logger.info(f"SENT to {payload.get('to')} | {payload.get('type','text')}")
         else:
             logger.error(f"SEND FAILED {r.status_code} → {r.text[:500]}")
         return r.json()
@@ -190,9 +187,9 @@ def handle_month_selection(to, session, list_id):
         send_text(to, msg)
         if PUMBLE_WEBHOOK:
             try:
-                requests.post(PUMBLE_WEBHOOK, json={"text": f"CASHBACK | {mask_phone(to)} | {session['carpenter_code']} | {month} | ₹{amt}"}, timeout=5)
+                requests.post(PUMBLE_WEBHOOK, json={"text": f"CASHBACK | {to} | {session['carpenter_code']} | {month} | ₹{amt}"}, timeout=5)
             except:
-                pass  # Don't fail if Pumble webhook fails
+                pass
 
     session.pop("months", None)
     session.pop("carpenter_code", None)
@@ -202,7 +199,7 @@ def handle_month_selection(to, session, list_id):
 
 # ==================== MENUS ====================
 def ask_language(to):
-    send_buttons(to, "Welcome to GAJA!\n\nGAJA-விற்கு வரவேற்கிறோம்! உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்.", [
+    send_buttons(to, "Welcome to GAJA!\n\nGAJA-விற்கு வரவேற்கிறோம்!\n\nPlease select your language / உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்", [
         {"id": "lang_en", "title": "English"},
         {"id": "lang_ta", "title": "தமிழ்"}
     ])
@@ -233,7 +230,7 @@ def carpenter_menu(to, lang):
 app = Flask(__name__)
 
 @app.get("/")
-def home(): return "GAJA BOT LIVE - ENHANCED VERSION", 200
+def home(): return "GAJA BOT LIVE - FIXED FLOW + 3MIN TIMEOUT", 200
 
 @app.get("/webhook")
 def verify():
@@ -270,19 +267,29 @@ def webhook():
             frm = msg["from"]
 
             s = get_session(frm)
-            logger.info(f"FROM {mask_phone(frm)} | TYPE {msg['type']} | STATE {s['state']} | LANG {s['lang']}")
+            logger.info(f"FROM {frm} | TYPE {msg['type']} | STATE {s['state']} | LANG {s.get('lang')}")
 
-            # Button reply
+            # If no language set, force language selection (unless it's a language selection button)
+            if s.get("lang") is None:
+                # Check if this is a language selection button
+                if msg["type"] == "interactive" and "button_reply" in msg["interactive"]:
+                    btn = msg["interactive"]["button_reply"]["id"]
+                    if btn.startswith("lang_"):
+                        s["lang"] = "en" if btn == "lang_en" else "ta"
+                        s["state"] = "main"
+                        save_session(frm, s)
+                        main_menu(frm, s["lang"])
+                        return "ok", 200
+                
+                # Not a language selection, show language menu
+                ask_language(frm)
+                return "ok", 200
+
+            # Button reply handlers (only after language is set)
             if msg["type"] == "interactive" and "button_reply" in msg["interactive"]:
                 btn = msg["interactive"]["button_reply"]["id"]
 
-                if btn.startswith("lang_"):
-                    s["lang"] = "en" if btn == "lang_en" else "ta"
-                    s["state"] = "main"
-                    save_session(frm, s)
-                    main_menu(frm, s["lang"])
-
-                elif btn == "main_customer":
+                if btn == "main_customer":
                     s["state"] = "main"
                     save_session(frm, s)
                     customer_menu(frm, s["lang"])
@@ -296,7 +303,6 @@ def webhook():
                     send_text(frm, "Thank you! We'll call you soon." if s["lang"]=="en" else "நன்றி! விரைவில் அழைக்கிறோம்.")
                     main_menu(frm, s["lang"])
 
-                # FIX 6, 7: Catalog with error handling and confirmation
                 elif btn == "cust_catalog":
                     if CATALOG_URL:
                         status = "📄 Sending catalogue..." if s["lang"]=="en" else "📄 கேட்டலாக் அனுப்பப்படுகிறது..."
@@ -314,7 +320,6 @@ def webhook():
                     save_session(frm, s)
                     main_menu(frm, s["lang"])
 
-                # FIX: Carpenter Registration Handler
                 elif btn == "carp_register":
                     reg_msg = (
                         f"📝 *Carpenter Registration*\n\n"
@@ -335,7 +340,6 @@ def webhook():
                     save_session(frm, s)
                     ask_carpenter_code(frm, s["lang"])
 
-                # FIX 6, 7: Scheme images with error handling and confirmation
                 elif btn == "carp_scheme":
                     if SCHEME_IMAGES:
                         status = "📸 Sending scheme details..." if s["lang"]=="en" else "📸 ஸ்கீம் விவரங்கள் அனுப்பப்படுகிறது..."
@@ -362,20 +366,26 @@ def webhook():
             if msg["type"] == "text":
                 text = msg["text"]["body"].strip().lower()
 
-                if text in ["0", "menu", "back", "main", "home", "hi", "hello", "start"]:
+                # Reset commands
+                if text in ["0", "menu", "back", "main", "home"]:
                     s["state"] = "main"
                     save_session(frm, s)
-                    if text in ["hi", "hello", "start"]:
-                        ask_language(frm)
-                    else:
-                        main_menu(frm, s["lang"])
+                    main_menu(frm, s["lang"])
                     return "ok", 200
 
+                # Fresh start commands
+                if text in ["hi", "hello", "start"]:
+                    s = {"lang": None, "state": "start"}
+                    save_session(frm, s)
+                    ask_language(frm)
+                    return "ok", 200
+
+                # Carpenter code input
                 if s["state"] == "awaiting_code":
                     handle_carpenter_code(frm, s, msg["text"]["body"])
                     return "ok", 200
 
-                # FIX 8: Better fallback message
+                # Default fallback
                 fallback = (
                     "I didn't understand that. 🤔\n\nHere's the main menu:"
                 ) if s["lang"]=="en" else (
