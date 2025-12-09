@@ -1,4 +1,4 @@
-# app.py - GAJA WhatsApp Bot - MERGED (Warranty + Cashback + Fixed Flow)
+# app.py - GAJA WhatsApp Bot - MERGED (Warranty from KISS + Cashback + FIXED FLOW)
 import os
 import sys
 import logging
@@ -9,7 +9,7 @@ import requests
 from threading import Lock
 from flask import Flask, request
 
-print("GAJA BOT - MERGED: WARRANTY + CASHBACK + FIXED FLOW")
+print("GAJA BOT - MERGED: WARRANTY (KISS) + CASHBACK + FIXED FLOW")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger(__name__)
 logger.info("GAJA BOT STARTING - MERGED BUILD")
@@ -20,7 +20,7 @@ PHONE_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "gaja-verify-123")
 APPS_URL = os.getenv("APPS_SCRIPT_URL", "")
 APPS_SECRET = os.getenv("APPS_SECRET", "")
-GAJA_PHONE = os.getenv("GAJA_PHONE", "91444XXXXXX")
+GAJA_PHONE = os.getenv("GAJA_PHONE", "9791877654")
 GAJA_SERVICE = "9791877654"  # Carpenter registration contact
 CATALOG_URL = os.getenv("CATALOG_URL", "")
 CATALOG_FILENAME = os.getenv("CATALOG_FILENAME", "GAJA-Catalogue.pdf")
@@ -30,6 +30,21 @@ SCHEME_IMAGES = [os.getenv(k) for k in ["SCHEME_IMG1","SCHEME_IMG2","SCHEME_IMG3
 GRAPH = "https://graph.facebook.com/v20.0"
 HEADERS = {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
 SESSION_TIMEOUT = 180  # 3 minutes
+
+# ==================== WARRANTY TERMS (ENGLISH ONLY) ====================
+WARRANTY_TC = """📋 *WARRANTY TERMS & CONDITIONS*
+
+1️⃣ Covers manufacturing defects only
+2️⃣ Products used beyond rated capacity not covered
+3️⃣ Paint thinners, acids, corrosive cleaners void warranty
+4️⃣ External paints/coatings void warranty
+5️⃣ Photo + video proof required for claims
+6️⃣ Product must be returned for GAJA inspection
+7️⃣ Valid only with official WhatsApp registration
+8️⃣ One token = one product
+9️⃣ Improper installation/modifications not covered
+
+📞 *For Claims:* {phone}"""
 
 # ==================== STORAGE ====================
 sessions = {}
@@ -117,7 +132,7 @@ def send_image(to, url, caption=None):
         payload["image"]["caption"] = caption
     send(payload)
 
-# ==================== GENERIC APPS-SCRIPT API ====================
+# ==================== GENERIC APPS-SCRIPT / API HELPERS (Warranty-compatible) ====================
 def api_call(action, params):
     """Generic API call to Apps Script / unified API"""
     if not APPS_URL:
@@ -135,18 +150,22 @@ def api_call(action, params):
         logger.error(f"API CALL FAILED: {action} | {e}")
         return None
 
-# ==================== WARRANTY HELPERS ====================
 def verify_warranty_token(token):
     return api_call("verify_token", {"token": token})
 
 def lookup_barcode(code):
-    return api_call("lookup_barcode", {"code": code})
+    # KISS: lookup barcode and also fetch care instructions based on category
+    result = api_call("lookup_barcode", {"code": code})
+    if result and result.get("found"):
+        category = result.get("category")
+        if category:
+            care_result = api_call("get_care_instructions", {"category": category})
+            if care_result and care_result.get("care_instructions"):
+                result["care_instructions"] = care_result["care_instructions"]
+    return result
 
 def register_warranty(token, barcode, phone):
     return api_call("register_warranty", {"token": token, "barcode": barcode, "phone": phone})
-
-def get_care_instructions(category):
-    return api_call("get_care_instructions", {"category": category})
 
 def detect_warranty_token(text):
     """Detect token of form 'GAJA <8 chars>' (case-insensitive)"""
@@ -166,47 +185,74 @@ def format_date(iso_date):
     except:
         return iso_date
 
+# ==================== WARRANTY FLOW (replaced with KISS flow) ====================
 def send_warranty_confirmation(to, lang, registration, product):
-    """Send formatted warranty confirmation"""
+    """Send simple warranty confirmation with buttons"""
     if lang == "en":
         msg = (
-            "🎉 *WARRANTY REGISTERED SUCCESSFULLY!*\n"
+            "🎉 *WARRANTY REGISTERED!*\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📦 *Product:* {product.get('sku_name', 'N/A')}\n"
             f"🏷️ *Category:* {product.get('category', 'N/A')}\n"
-            f"🔢 *Product Code:* {product.get('internal_sku', 'N/A')}\n\n"
-            f"⏰ *Warranty Period:* {registration.get('warranty_months', 0)} months\n"
-            f"📅 *Valid Until:* {format_date(registration.get('expiry_date'))}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "*🛠️ CARE INSTRUCTIONS:*\n\n"
-            f"{product.get('care_instructions', 'N/A')}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "📞 *For Warranty Claims:*\n"
-            f"Call: {GAJA_PHONE}\n\n"
-            "✅ Your warranty is now active!\n"
-            "Keep this message for future reference.\n\n"
-            "Thank you for choosing GAJA! 🙏"
+            f"⏰ *Warranty:* {registration.get('warranty_months', 0)} months\n\n"
+            "✅ Your warranty is now active!"
         )
-    else:
+    else:  # Tamil fallback
         msg = (
-            "🎉 *வாரன்டி வெற்றிகரமாக பதிவு செய்யப்பட்டது!*\n"
+            "🎉 *வாரன்டி பதிவு செய்யப்பட்டது!*\n"
             "━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📦 *பொருள்:* {product.get('sku_name', 'N/A')}\n"
             f"🏷️ *வகை:* {product.get('category', 'N/A')}\n"
-            f"🔢 *பொருள் குறியீடு:* {product.get('internal_sku', 'N/A')}\n\n"
-            f"⏰ *வாரன்டி காலம்:* {registration.get('warranty_months', 0)} மாதங்கள்\n"
-            f"📅 *செல்லுபடியாகும் வரை:* {format_date(registration.get('expiry_date'))}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "*🛠️ பராமரிப்பு வழிமுறைகள்:*\n\n"
-            f"{product.get('care_instructions', 'N/A')}\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n"
-            "📞 *வாரன்டி கோரிக்கைக்கு:*\n"
-            f"அழைக்கவும்: {GAJA_PHONE}\n\n"
-            "✅ உங்கள் வாரன்டி இப்போது செயலில் உள்ளது!\n"
-            "எதிர்கால குறிப்புக்காக இந்த செய்தியை வைத்திருங்கள்.\n\n"
-            "GAJA-வை தேர்ந்தெடுத்ததற்கு நன்றி! 🙏"
+            f"⏰ *வாரன்டி:* {registration.get('warranty_months', 0)} மாதங்கள்\n\n"
+            "✅ உங்கள் வாரன்டி செயலில் உள்ளது!"
         )
+    
+    # Send confirmation message
     send_text(to, msg)
+    
+    # Send buttons for care & T&C
+    button_msg = "Learn more:" if lang == "en" else "மேலும் அறிய:"
+    buttons = [
+        {"id": "warr_care", "title": "🛠️ Care Tips" if lang == "en" else "🛠️ பராமரிப்பு"},
+        {"id": "warr_tc", "title": "📋 Terms" if lang == "en" else "📋 விதிமுறைகள்"},
+        {"id": "warr_close", "title": "✖️ Close" if lang == "en" else "✖️ மூடு"}
+    ]
+    send_buttons(to, button_msg, buttons)
+
+def send_care_instructions(to, lang, product):
+    """Send care instructions"""
+    care = product.get("care_instructions", "No care instructions available")
+    category = product.get("category", "Product")
+    
+    if lang == "en":
+        msg = (
+            f"🛠️ *CARE INSTRUCTIONS*\n"
+            f"{category}\n\n"
+            f"{care}\n\n"
+            "Follow these tips to maximize your product's lifespan!"
+        )
+    else:
+        msg = (
+            f"🛠️ *பராமரிப்பு வழிமுறைகள்*\n"
+            f"{category}\n\n"
+            f"{care}\n\n"
+            "உங்கள் பொருளின் ஆயுளை அதிகரிக்க இந்த குறிப்புகளைப் பின்பற்றவும்!"
+        )
+    
+    send_text(to, msg)
+    
+    # Offer to close
+    buttons = [{"id": "warr_close", "title": "✖️ Close" if lang == "en" else "✖️ மூடு"}]
+    send_buttons(to, "Anything else?" if lang == "en" else "வேறு ஏதாவது?", buttons)
+
+def send_warranty_tc(to, lang):
+    """Send warranty terms & conditions (English only)"""
+    msg = WARRANTY_TC.format(phone=GAJA_PHONE)
+    send_text(to, msg)
+    
+    # Offer to close
+    buttons = [{"id": "warr_close", "title": "✖️ Close" if lang == "en" else "✖️ மூடு"}]
+    send_buttons(to, "Anything else?" if lang == "en" else "வேறு ஏதாவது?", buttons)
 
 def ask_for_barcode(frm, lang):
     msg = (
@@ -216,7 +262,7 @@ def ask_for_barcode(frm, lang):
         "Please type the 6-digit code:"
     ) if lang == "en" else (
         "✅ வாரன்டி டோக்கன் சரிபார்க்கப்பட்டது!\n\n"
-        "📦 அடுத்த படி: உங்கள் பொருளின் MRP ஸ்டிக்கரில் உள்ள 6-இலக்க குறியீட்டை உள்ளிடவும்.\n\n"
+        "📦 அடுத்தது: உங்கள் பொருளின் MRP ஸ்டிக்கரில் உள்ள 6-இலக்க குறியீட்டை உள்ளிடவும்.\n\n"
         "உதாரணம்: 528941\n\n"
         "6-இலக்க குறியீட்டை தட்டச்சு செய்யவும்:"
     )
@@ -340,10 +386,16 @@ def handle_barcode_input(frm, session, raw_code):
         return
 
     # success -> send confirmation
+    # Store product info for later use (care/tc buttons)
+    session["warranty_product"] = product
+    session["state"] = "warranty_complete"
+    save_session(frm, session)
+
     send_warranty_confirmation(frm, session["lang"], result, product)
 
     if PUMBLE_WEBHOOK:
         try:
+            # Using Script 1's Pumble format per your instruction
             requests.post(PUMBLE_WEBHOOK, json={
                 "text": f"WARRANTY | {frm} | Token: {session['warranty_token']} | Product: {product.get('sku_name')} | {result.get('warranty_months')}mo"
             }, timeout=5)
@@ -351,8 +403,8 @@ def handle_barcode_input(frm, session, raw_code):
             pass
 
     with lock:
-        if frm in sessions:
-            del sessions[frm]
+        # keep the session (so user can press Care/Terms), but we won't delete it here
+        pass
 
     logger.info(f"WARRANTY REGISTERED: {session.get('warranty_token')} | {frm} | {product.get('sku_name')}")
 
@@ -595,6 +647,26 @@ def webhook():
                         error = f"❌ Scheme images unavailable.\nPlease call {GAJA_PHONE}" if s["lang"]=="en" else f"❌ ஸ்கீம் படங்கள் கிடைக்கவில்லை.\nதயவுசெய்து {GAJA_PHONE} அழைக்கவும்"
                         send_text(frm, error)
                     carpenter_menu(frm, s["lang"])
+
+                # Warranty-related buttons (from KISS flow)
+                if btn == "warr_care":
+                    if s.get("warranty_product"):
+                        send_care_instructions(frm, s["lang"], s["warranty_product"])
+                    else:
+                        send_text(frm, "No product info available." if s.get("lang") == "en" else "பொருள் தகவல் இல்லை.")
+                    return "ok", 200
+
+                if btn == "warr_tc":
+                    send_warranty_tc(frm, s["lang"])
+                    return "ok", 200
+
+                if btn == "warr_close":
+                    goodbye = "Thank you for choosing GAJA! 🙏" if s.get("lang") == "en" else "GAJA-வை தேர்ந்தெடுத்ததற்கு நன்றி! 🙏"
+                    send_text(frm, goodbye)
+                    with lock:
+                        if frm in sessions:
+                            del sessions[frm]
+                    return "ok", 200
 
                 return "ok", 200
 
